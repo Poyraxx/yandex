@@ -208,7 +208,9 @@ public sealed class DiskClient : IDisposable
                 token.ThrowIfCancellationRequested();
                 progress?.Report(new(file, TransferState.Downloading, 0, file.Size));
                 using var address = await GetJsonAsync($"{Api}/download?public_key={Uri.EscapeDataString(link)}&path={Uri.EscapeDataString(file.Path)}", token).ConfigureAwait(false);
-                string href = RequiredString(address.RootElement, "href");
+                string? href = GetString(address.RootElement, "href");
+                if (string.IsNullOrWhiteSpace(href))
+                    throw new DiskException("İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.");
                 ValidateHttps(href);
                 using var response = await SendAsync(href, token).ConfigureAwait(false);
                 if (IsTransient(response.StatusCode) || response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)

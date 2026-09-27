@@ -111,7 +111,9 @@ public final class MainActivity extends Activity {
             });
         }
         LinearLayout heading = row();
-        TextView title = text("Yandex", 28, TEXT);
+        TextView title = text("Yandexdisk Downloader", 24, TEXT);
+        title.setSingleLine(true);
+        title.setAutoSizeTextTypeUniformWithConfiguration(14, 24, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
         title.setTypeface(null, Typeface.BOLD);
         heading.addView(title, new LinearLayout.LayoutParams(0, dp(44), 1));
         TextView signature = text("Poyrax", 13, MUTED);

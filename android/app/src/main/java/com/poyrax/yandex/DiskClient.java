@@ -131,7 +131,10 @@ public class DiskClient {
                 cancel.check();
                 progress.update(0, file.size);
                 JSONObject address = json(API + "/download?public_key=" + encode(link) + "&path=" + encode(file.path), cancel);
-                connection = open(required(address, "href"), cancel);
+                Object href = address.opt("href");
+                if (!(href instanceof String) || ((String) href).trim().isEmpty())
+                    throw new PermanentException("İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.");
+                connection = open((String) href, cancel);
                 int code = connection.getResponseCode();
                 if (transientStatus(code) || code == 403 || code == 401) throw new RetryException(delay(connection, attempt));
                 checkStatus(code);

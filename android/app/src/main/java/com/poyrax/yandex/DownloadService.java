@@ -196,7 +196,7 @@ public final class DownloadService extends Service {
     private Notification notification() {
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         PendingIntent cancel = PendingIntent.getService(this, 1, new Intent(this, DownloadService.class).setAction(CANCEL), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        return new Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_download).setContentTitle("Yandex")
+        return new Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_download).setContentTitle("Yandexdisk Downloader")
                 .setContentText(summary).setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true)
                 .setProgress(100, percent, false).addAction(new Notification.Action.Builder(null, "İptal", cancel).build()).build();
     }

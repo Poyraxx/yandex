@@ -114,6 +114,25 @@ public class DiskClientTest {
     }
 
     @Test
+    public void emptyDownloadAddressesFailWithoutReadingFileData() throws Exception {
+        for (String json : Arrays.asList("{\"method\":\"GET\",\"href\":\"\",\"templated\":false}", "{\"href\":\"   \"}", "{\"href\":null}", "{}")) {
+            AtomicInteger requests = new AtomicInteger();
+            Fake client = new Fake(url -> {
+                requests.incrementAndGet();
+                assertTrue(url.contains("/resources/download"));
+                return response(json);
+            });
+            MemoryDestination destination = new MemoryDestination();
+            IOException error = assertThrows(IOException.class, () -> client.download(LINK, file(), destination,
+                    new DiskClient.Cancellation(), (bytes, total) -> {}));
+            assertTrue(error.getMessage().contains("İndirme adresi verilmedi"));
+            assertEquals(1, requests.get());
+            assertFalse(destination.completed);
+            assertNull(destination.output);
+        }
+    }
+
+    @Test
     public void expiredDownloadAddressIsRefreshed() throws Exception {
         AtomicInteger links = new AtomicInteger();
         AtomicInteger transfers = new AtomicInteger();

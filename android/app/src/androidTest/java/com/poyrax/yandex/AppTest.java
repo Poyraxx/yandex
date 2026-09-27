@@ -54,6 +54,7 @@ public class AppTest {
             until(() -> children(session.activity.getWindow().getDecorView(), android.widget.ImageView.class).stream().anyMatch(view -> view.getDrawable() != null));
             instrumentation.runOnMainSync(() -> {
                 assertNotNull(findText(session.activity, "Poyrax"));
+                assertNotNull(findText(session.activity, "Yandexdisk Downloader"));
                 List<CheckBox> choices = children(session.activity.getWindow().getDecorView(), CheckBox.class);
                 assertFalse(choices.isEmpty());
                 choices.get(0).setChecked(true);
@@ -61,8 +62,10 @@ public class AppTest {
                 assertTrue(selected.isEnabled());
                 selected.performClick();
             });
-            until(() -> findText(session.activity, "1 indirildi") != null);
+            until(() -> findText(session.activity, "1 indirildi") != null && !session.activity.downloadService.running);
             assertEquals(1, countFiles(session.folder));
+            instrumentation.waitForIdleSync();
+            Thread.sleep(200);
             screenshot("android.png");
         } finally { close(session.activity); }
     }
@@ -76,6 +79,8 @@ public class AppTest {
             instrumentation.runOnMainSync(() -> ((Button) findText(session.activity, "Tümünü indir")).performClick());
             until(() -> findText(session.activity, "3 indirildi · 1 indirilemedi") != null);
             assertEquals(3, countFiles(session.folder));
+            instrumentation.runOnMainSync(() -> children(session.activity.getWindow().getDecorView(), androidx.recyclerview.widget.RecyclerView.class).get(0).scrollToPosition(3));
+            until(() -> findText(session.activity, "İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.") != null);
             assertNotNull(session.folder.findFile("Alt"));
             assertNotNull(session.folder.findFile("Alt").findFile("Resim.png"));
             instrumentation.runOnMainSync(() -> ((Button) findText(session.activity, "Tümünü indir")).performClick());
@@ -201,8 +206,8 @@ public class AppTest {
             if (thumbnail) body = preview;
             else if (address.contains("/resources/download")) {
                 String path = URLDecoder.decode(address.substring(address.indexOf("&path=") + 6), "UTF-8");
-                if (blocked && path.equals("/Kapali.jpg")) status = 403;
-                body = ("{\"href\":\"https://download.test/file\"}").getBytes(StandardCharsets.UTF_8);
+                body = (blocked && path.equals("/Kapali.jpg") ? "{\"method\":\"GET\",\"href\":\"\",\"templated\":false}" :
+                        "{\"href\":\"https://download.test/file\"}").getBytes(StandardCharsets.UTF_8);
             } else if (address.contains("/resources?")) {
                 try {
                     JSONArray items = new JSONArray();

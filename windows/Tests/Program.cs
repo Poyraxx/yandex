@@ -47,6 +47,7 @@ internal static class Program
             ("Windows adları ve klasör sınırı", SafePathsAsync),
             ("Klasör adı çakışmaları", FolderCollisionsAsync),
             ("İndirme bağlantısını yenileme", DownloadRetriesAsync),
+            ("Boş indirme adresi ve devam eden kuyruk", EmptyDownloadAddressAsync),
             ("Eksik dosya ve devam eden kuyruk", FailedTransferAsync),
             ("Büyük dosya, akış ve eşzamanlılık", LargeStreamingAsync),
             ("İptal ve yarım dosya temizliği", DownloadCancellationAsync),
@@ -284,6 +285,24 @@ internal static class Program
         Equal(3, links);
         Equal(3, transfers);
         Equal(0, Directory.GetFiles(folder.Path, "*.part").Length);
+    }
+
+    private static async Task EmptyDownloadAddressAsync()
+    {
+        foreach (var body in new[] { "{\"method\":\"GET\",\"href\":\"\",\"templated\":false}", "{\"href\":\"   \"}", "{\"href\":null}", "{}" })
+        {
+            using var folder = new TemporaryFolder();
+            using var http = Mock(request => request.RequestUri!.Host != "cloud-api.yandex.net" ? Bytes(Payload) :
+                Query(request, "path") == "/bad.jpg" ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) } :
+                Json(new { href = "https://download.test/file" }));
+            using var client = Client(http);
+            var result = await client.DownloadAsync(Link, [File("bad.jpg"), File("good.jpg")], folder.Path, null, default);
+            Equal(1, result.Completed);
+            Equal(1, result.Failed);
+            Check(result.Updates.Any(u => u.State == TransferState.Failed && u.Error!.Contains("İndirme adresi verilmedi")), "Boş adres için hata eksik");
+            Equal(1, Directory.GetFiles(folder.Path).Length);
+            Check(System.IO.File.Exists(System.IO.Path.Combine(folder.Path, "good.jpg")), "Diğer dosya indirilmedi");
+        }
     }
 
     private static async Task FailedTransferAsync()
