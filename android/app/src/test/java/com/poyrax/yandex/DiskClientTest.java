@@ -13,6 +13,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -119,17 +120,88 @@ public class DiskClientTest {
             AtomicInteger requests = new AtomicInteger();
             Fake client = new Fake(url -> {
                 requests.incrementAndGet();
-                assertTrue(url.contains("/resources/download"));
+                assertTrue(url.contains("/resources"));
                 return response(json);
             });
             MemoryDestination destination = new MemoryDestination();
             IOException error = assertThrows(IOException.class, () -> client.download(LINK, file(), destination,
                     new DiskClient.Cancellation(), (bytes, total) -> {}));
             assertTrue(error.getMessage().contains("İndirme adresi verilmedi"));
-            assertEquals(1, requests.get());
+            assertEquals(2, requests.get());
             assertFalse(destination.completed);
             assertNull(destination.output);
         }
+    }
+
+    @Test
+    public void originalAddressesAreVerifiedBeforeCompletion() throws Exception {
+        for (boolean direct : Arrays.asList(false, true)) {
+            JSONObject metadata = resource("a.jpg", "/a.jpg", "image/jpeg").put("sha256", payloadHash())
+                    .put("file", direct ? "https://download.test/original" : "")
+                    .put("sizes", new JSONArray().put(new JSONObject().put("name", "ORIGINAL").put("url", "https://download.test/original")));
+            Fake client = new Fake(url -> url.contains("/resources/download") ? response("{\"href\":\"\"}") :
+                    url.contains("/resources?") ? response(metadata.toString()) : new Reply(200, PAYLOAD, "image/jpeg"));
+            MemoryDestination destination = new MemoryDestination();
+            MediaFile file = direct ? new MediaFile("film.mp4", "/film.mp4", Arrays.asList("film.mp4"), PAYLOAD.length, true, "", "video/mp4") : file();
+            client.download(LINK, file, destination, new DiskClient.Cancellation(), (bytes, total) -> {});
+            assertTrue(destination.completed);
+            assertArrayEquals(PAYLOAD, destination.bytes);
+        }
+    }
+
+    @Test
+    public void equalSizedFilesWithWrongHashAreRemoved() throws Exception {
+        JSONObject metadata = resource("a.jpg", "/a.jpg", "image/jpeg").put("sha256", "0".repeat(64)).put("file", "https://download.test/original");
+        Fake client = new Fake(url -> url.contains("/resources/download") ? response("{\"href\":\"\"}") :
+                url.contains("/resources?") ? response(metadata.toString()) : new Reply(200, PAYLOAD, "image/jpeg"));
+        MemoryDestination destination = new MemoryDestination();
+        IOException error = assertThrows(IOException.class, () -> client.download(LINK, file(), destination, new DiskClient.Cancellation(), (bytes, total) -> {}));
+        assertTrue(error.getMessage().contains("Dosya doğrulanamadı"));
+        assertFalse(destination.completed);
+        assertNull(destination.output);
+    }
+
+    @Test
+    public void previewsAndUnverifiedAddressesAreNotSavedAsOriginals() throws Exception {
+        for (String variant : Arrays.asList("no-hash", "preview", "video")) {
+            JSONObject metadata = resource("a.jpg", "/a.jpg", "image/jpeg").put("sha256", variant.equals("no-hash") ? "" : payloadHash())
+                    .put("preview", "https://download.test/preview")
+                    .put("sizes", new JSONArray().put(new JSONObject().put("name", variant.equals("preview") ? "M" : "ORIGINAL").put("url", "https://download.test/preview")));
+            AtomicInteger transfers = new AtomicInteger();
+            Fake client = new Fake(url -> {
+                if (url.contains("/resources/download")) return response("{\"href\":\"\"}");
+                if (url.contains("/resources?")) return response(metadata.toString());
+                transfers.incrementAndGet();
+                return new Reply(200, PAYLOAD, "image/jpeg");
+            });
+            MemoryDestination destination = new MemoryDestination();
+            MediaFile file = variant.equals("video") ? new MediaFile("film.mp4", "/film.mp4", Arrays.asList("film.mp4"), PAYLOAD.length, true, "", "video/mp4") : file();
+            assertThrows(IOException.class, () -> client.download(LINK, file, destination, new DiskClient.Cancellation(), (bytes, total) -> {}));
+            assertEquals(0, transfers.get());
+            assertFalse(destination.completed);
+            assertNull(destination.output);
+        }
+    }
+
+    @Test
+    public void expiredOriginalAddressesAreRefreshed() throws Exception {
+        AtomicInteger metadataCalls = new AtomicInteger();
+        Fake client = new Fake(url -> {
+            if (url.contains("/resources/download")) return response("{\"href\":\"\"}");
+            if (url.contains("/resources?")) return response(resource("a.jpg", "/a.jpg", "image/jpeg").put("sha256", payloadHash())
+                    .put("file", "https://download.test/" + metadataCalls.incrementAndGet()).toString());
+            return url.endsWith("/1") ? new Reply(403, new byte[0], "text/plain") : new Reply(200, PAYLOAD, "image/jpeg");
+        });
+        MemoryDestination destination = new MemoryDestination();
+        client.download(LINK, file(), destination, new DiskClient.Cancellation(), (bytes, total) -> {});
+        assertEquals(2, metadataCalls.get());
+        assertTrue(destination.completed);
+    }
+
+    private static String payloadHash() throws Exception {
+        StringBuilder result = new StringBuilder(64);
+        for (byte value : MessageDigest.getInstance("SHA-256").digest(PAYLOAD)) result.append(String.format("%02x", value & 0xff));
+        return result.toString();
     }
 
     @Test

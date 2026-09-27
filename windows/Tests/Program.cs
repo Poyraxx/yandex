@@ -22,6 +22,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args is ["--public-link", var link, "--public-path", var path])
+            return VerifyPublicDownloadAsync(link, path).GetAwaiter().GetResult();
         if (args.Contains("--ui") || args.Contains("--ui-check"))
         {
             return ShowFixture(args);
@@ -48,6 +50,10 @@ internal static class Program
             ("Klasör adı çakışmaları", FolderCollisionsAsync),
             ("İndirme bağlantısını yenileme", DownloadRetriesAsync),
             ("Boş indirme adresi ve devam eden kuyruk", EmptyDownloadAddressAsync),
+            ("Orijinal adres ve SHA-256 doğrulama", OriginalAddressAsync),
+            ("Aynı boyutta farklı dosyanın reddi", OriginalHashMismatchAsync),
+            ("Önizlemenin orijinal yerine kaydedilmemesi", OriginalAddressRequirementsAsync),
+            ("Süresi dolan orijinal adresin yenilenmesi", OriginalAddressRefreshAsync),
             ("Eksik dosya ve devam eden kuyruk", FailedTransferAsync),
             ("Büyük dosya, akış ve eşzamanlılık", LargeStreamingAsync),
             ("İptal ve yarım dosya temizliği", DownloadCancellationAsync),
@@ -71,6 +77,21 @@ internal static class Program
         }
         Console.WriteLine($"{tests.Length - failed}/{tests.Length} başarılı");
         return failed == 0 ? 0 : 1;
+    }
+
+    private static async Task<int> VerifyPublicDownloadAsync(string link, string path)
+    {
+        using var folder = new TemporaryFolder();
+        using var client = new DiskClient();
+        var file = new MediaFile("test.jpg", path, ["test.jpg"], 0, false, null);
+        var result = await client.DownloadAsync(link, [file], folder.Path, null, default);
+        if (result.Completed != 1)
+        {
+            Console.WriteLine(result.Updates.Single().Error);
+            return 1;
+        }
+        Console.WriteLine($"API downloaded bytes: {new FileInfo(Directory.GetFiles(folder.Path).Single()).Length}");
+        return 0;
     }
 
     private static Task ValidateLinksAsync()
@@ -303,6 +324,79 @@ internal static class Program
             Equal(1, Directory.GetFiles(folder.Path).Length);
             Check(System.IO.File.Exists(System.IO.Path.Combine(folder.Path, "good.jpg")), "Diğer dosya indirilmedi");
         }
+    }
+
+    private static async Task OriginalAddressAsync()
+    {
+        foreach (bool direct in new[] { false, true })
+        {
+            using var folder = new TemporaryFolder();
+            using var http = Mock(request => request.RequestUri!.Host != "cloud-api.yandex.net" ? Bytes(Payload) :
+                request.RequestUri.AbsolutePath.EndsWith("/download") ? Json(new { href = "" }) :
+                Json(new { type = "file", size = Payload.Length, sha256 = Convert.ToHexString(SHA256.HashData(Payload)),
+                    file = direct ? "https://download.test/original" : "", sizes = new[] { new { name = "ORIGINAL", url = "https://download.test/original" } } }));
+            using var client = Client(http);
+            var result = await client.DownloadAsync(Link, [File(direct ? "film.mp4" : "a.jpg")], folder.Path, null, default);
+            Equal(1, result.Completed);
+            Check(System.IO.File.ReadAllBytes(Directory.GetFiles(folder.Path).Single()).SequenceEqual(Payload), "Orijinal veri değişti");
+        }
+    }
+
+    private static async Task OriginalHashMismatchAsync()
+    {
+        using var folder = new TemporaryFolder();
+        using var http = Mock(request => request.RequestUri!.Host != "cloud-api.yandex.net" ? Bytes(Payload) :
+            request.RequestUri.AbsolutePath.EndsWith("/download") ? Json(new { href = "" }) :
+            Json(new { type = "file", size = Payload.Length, sha256 = new string('0', 64), file = "https://download.test/original" }));
+        using var client = Client(http);
+        var result = await client.DownloadAsync(Link, [File("a.jpg")], folder.Path, null, default);
+        Equal(1, result.Failed);
+        Check(result.Updates.Single().Error!.Contains("Dosya doğrulanamadı"), "Hash hatası belirtilmedi");
+        Equal(0, Directory.GetFiles(folder.Path).Length);
+    }
+
+    private static async Task OriginalAddressRequirementsAsync()
+    {
+        foreach (string variant in new[] { "no-hash", "preview", "video" })
+        {
+            using var folder = new TemporaryFolder();
+            int transfers = 0;
+            using var http = Mock(request =>
+            {
+                if (request.RequestUri!.Host != "cloud-api.yandex.net")
+                {
+                    Interlocked.Increment(ref transfers);
+                    return Bytes(Payload);
+                }
+                return request.RequestUri.AbsolutePath.EndsWith("/download") ? Json(new { href = "" }) :
+                    Json(new { type = "file", size = Payload.Length, sha256 = variant == "no-hash" ? "" : Convert.ToHexString(SHA256.HashData(Payload)),
+                        preview = "https://download.test/preview", sizes = new[] { new { name = variant == "preview" ? "M" : "ORIGINAL", url = "https://download.test/preview" } } });
+            });
+            using var client = Client(http);
+            var result = await client.DownloadAsync(Link, [File(variant == "video" ? "film.mp4" : "a.jpg")], folder.Path, null, default);
+            Equal(1, result.Failed);
+            Equal(0, transfers);
+            Equal(0, Directory.GetFiles(folder.Path).Length);
+        }
+    }
+
+    private static async Task OriginalAddressRefreshAsync()
+    {
+        using var folder = new TemporaryFolder();
+        int metadataCalls = 0;
+        using var http = Mock(request =>
+        {
+            if (request.RequestUri!.Host != "cloud-api.yandex.net")
+                return request.RequestUri.AbsolutePath == "/1" ? new HttpResponseMessage(HttpStatusCode.Forbidden) : Bytes(Payload);
+            if (request.RequestUri.AbsolutePath.EndsWith("/download")) return Json(new { href = "" });
+            return Json(new { type = "file", size = Payload.Length, sha256 = Convert.ToHexString(SHA256.HashData(Payload)),
+                file = "https://download.test/" + Interlocked.Increment(ref metadataCalls) });
+        });
+        using var client = Client(http);
+        var result = await client.DownloadAsync(Link, [File("a.jpg")], folder.Path, null, default);
+        Equal(1, result.Completed);
+        Equal(2, metadataCalls);
+        Equal(1, Directory.GetFiles(folder.Path).Length);
     }
 
     private static async Task FailedTransferAsync()

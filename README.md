@@ -41,7 +41,9 @@ On Android, downloads continue in the background with a notification. They do no
 
 ### Supported links
 
-Links must be public and allow downloading. Account login, private or password protected shares, and video playback are not supported. Closed, invalid or restricted links show a short error. If folder permissions change, choose the folder again.
+Links must be public. If the standard download endpoint returns no address, the app checks for an original file address in Yandex's metadata. Images can also use the `ORIGINAL` address. These downloads are saved only if their size and SHA-256 match the metadata. This can work for some shares with downloading disabled; it is not guaranteed for every file or share. Video playback streams and reduced previews are not saved as original files.
+
+Account login, private or password protected shares, and video playback are not supported. Closed, invalid or inaccessible links show a short error. If folder permissions change, choose the folder again.
 
 ### Build from source
 
@@ -87,7 +89,7 @@ From `android`:
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
-Device tests require a connected device or emulator. Tests cover single files, nested folders, pagination, media filtering, selected and bulk downloads, filename collisions, interrupted transfers and cancellation using sample API responses. A real file download was verified on Android with a separate public share. Empty download addresses in successful Yandex responses were also checked; the app reports that no download address was provided. Large file, network interruption and cancellation scenarios use sample responses.
+Device tests require a connected device or emulator. Tests cover single files, nested folders, pagination, media filtering, selected and bulk downloads, filename collisions, interrupted transfers and cancellation using sample API responses. Original address checks cover hash mismatches, address expiry and rejecting reduced previews. A real image whose standard download address was empty was downloaded and verified against Yandex's SHA-256. A separate public share was also used to verify a normal Android download. Downloading restricted videos was not verified. Large file, network interruption and cancellation scenarios use sample responses.
 
 Screenshots below use sample test files. Listing and downloads use the [Yandex Disk REST API](https://yandex.com/dev/disk-api/doc/en/). This is an independent app, not an official Yandex product.
 
@@ -136,9 +138,9 @@ Android’de uygulama arka plandayken başlayan indirme bildirimle devam eder. U
 
 ## Desteklenen bağlantılar
 
-Paylaşımın herkese açık ve indirmeye izin veren bir Yandex Disk bağlantısı olması gerekir. Hesap girişi, özel veya şifreli paylaşımlar ve video oynatma bulunmaz.
+Paylaşımın herkese açık bir Yandex Disk bağlantısı olması gerekir. Normal indirme uç noktası adres vermiyorsa Yandex'in dosya bilgilerindeki orijinal dosya adresi kontrol edilir. Görseller için `ORIGINAL` adresi de kullanılabilir. Bu yoldan alınan dosya, boyutu ve SHA-256 değeri dosya bilgileriyle eşleşirse kaydedilir. İndirmesi kapalı bazı paylaşımlarda çalışabilir; her dosya veya paylaşım için garanti verilmez. Video oynatma akışları ve küçük önizlemeler orijinal dosya olarak kaydedilmez.
 
-Bağlantı kapalıysa, geçersizse ya da paylaşım sahibi indirmeyi engellediyse uygulama kısa bir hata gösterir. Klasöre yazma izni değiştiğinde **Klasör seç** ile klasörü yeniden seçin.
+Hesap girişi, özel veya şifreli paylaşımlar ve video oynatma bulunmaz. Bağlantı kapalıysa, geçersizse veya dosyaya erişilemiyorsa uygulama kısa bir hata gösterir. Klasöre yazma izni değiştiğinde **Klasör seç** ile klasörü yeniden seçin.
 
 ## Ekranlar
 
@@ -196,8 +198,8 @@ Android kontrolleri, `android` klasöründen:
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
-Cihaz testleri için bağlı bir Android cihazı veya çalışan bir emülatör gerekir. Windows’ta 21 indirme/API kontrolü ve 4 arayüz kontrolü; Android’de 14 birim testi bulunur. Galeri, indirme ve iptal için üç cihaz testi Android 8 ve Android 17 emülatörlerinde sınandı.
+Cihaz testleri için bağlı bir Android cihazı veya çalışan bir emülatör gerekir. Windows’ta 25 indirme/API kontrolü ve 4 arayüz kontrolü; Android’de 18 birim testi bulunur. Galeri, indirme ve iptal için üç cihaz testi Android 8 ve Android 17 emülatörlerinde sınandı.
 
-Testler tek dosya, alt klasörler, sayfalama, dosya türü ayrımı, seçili ve toplu indirme, isim çakışması, kesilen bağlantı ve iptali örnek API yanıtlarıyla kontrol eder. Android üzerinde ayrı bir herkese açık paylaşımda gerçek dosya indirme doğrulandı. Yandex’in başarılı yanıtta boş indirme adresi döndürmesi de kontrol edildi; uygulama bu durumda indirme izninin kontrol edilmesini isteyen bir hata gösterir. Büyük dosya, ağ kesintisi ve iptal senaryoları gerçek paylaşım yerine örnek yanıtlarla sınandı.
+Testler tek dosya, alt klasörler, sayfalama, dosya türü ayrımı, seçili ve toplu indirme, isim çakışması, kesilen bağlantı ve iptali örnek API yanıtlarıyla kontrol eder. Orijinal adres için hash uyuşmazlığı, süresi dolan adresin yenilenmesi ve küçük önizlemelerin reddi sınanır. Normal indirme adresi boş olan gerçek bir görsel indirildi ve Yandex'in SHA-256 değeriyle eşleştiği doğrulandı. Android üzerinde ayrı bir herkese açık paylaşımda normal indirme de doğrulandı. İndirmesi kapalı videoların indirilmesi doğrulanmadı. Büyük dosya, ağ kesintisi ve iptal senaryoları gerçek paylaşım yerine örnek yanıtlarla sınandı.
 
 Listeleme ve indirme için Yandex Disk’in [REST API’si](https://yandex.com/dev/disk-api/doc/en/) kullanılır. Uygulama Yandex’in resmi ürünü değildir.

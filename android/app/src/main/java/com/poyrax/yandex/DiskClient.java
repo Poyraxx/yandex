@@ -14,6 +14,8 @@ import java.net.URI;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -132,8 +134,34 @@ public class DiskClient {
                 progress.update(0, file.size);
                 JSONObject address = json(API + "/download?public_key=" + encode(link) + "&path=" + encode(file.path), cancel);
                 Object href = address.opt("href");
-                if (!(href instanceof String) || ((String) href).trim().isEmpty())
-                    throw new PermanentException("İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.");
+                String expectedHash = null;
+                long originalSize = -1;
+                MessageDigest digest = null;
+                if (!(href instanceof String) || ((String) href).trim().isEmpty()) {
+                    JSONObject metadata = json(resourceUrl(link, file.path, 0), cancel);
+                    String hash = metadata.optString("sha256", "");
+                    long size = metadata.optLong("size", -1);
+                    if ("file".equals(metadata.optString("type")) && hash.matches("[0-9a-fA-F]{64}") && size >= 0) {
+                        href = metadata.opt("file");
+                        JSONArray sizes = metadata.optJSONArray("sizes");
+                        if ((!(href instanceof String) || ((String) href).trim().isEmpty()) && !file.video && sizes != null) {
+                            for (int i = 0; i < sizes.length(); i++) {
+                                JSONObject item = sizes.optJSONObject(i);
+                                if (item != null && "ORIGINAL".equals(item.optString("name")) &&
+                                        item.opt("url") instanceof String && !item.optString("url").trim().isEmpty()) {
+                                    href = item.optString("url");
+                                    break;
+                                }
+                            }
+                        }
+                        expectedHash = hash;
+                        originalSize = size;
+                    }
+                    if (!(href instanceof String) || ((String) href).trim().isEmpty())
+                        throw new PermanentException("İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.");
+                    try { digest = MessageDigest.getInstance("SHA-256"); }
+                    catch (NoSuchAlgorithmException e) { throw new PermanentException("Dosya doğrulanamadı. Yeniden deneyin."); }
+                }
                 connection = open((String) href, cancel);
                 int code = connection.getResponseCode();
                 if (transientStatus(code) || code == 403 || code == 401) throw new RetryException(delay(connection, attempt));
@@ -150,6 +178,7 @@ public class DiskClient {
                         if (count < 0) break;
                         cancel.check();
                         output.write(buffer, 0, count);
+                        if (digest != null) digest.update(buffer, 0, count);
                         bytes += count;
                         if (System.nanoTime() - lastUpdate > 100_000_000L) {
                             progress.update(bytes, expected);
@@ -158,7 +187,14 @@ public class DiskClient {
                     }
                     output.flush();
                 }
-                if ((length >= 0 && bytes != length) || (file.size > 0 && bytes != file.size)) throw new RetryException(1000L * (attempt + 1));
+                if ((length >= 0 && bytes != length) || (file.size > 0 && bytes != file.size) ||
+                        (originalSize >= 0 && bytes != originalSize)) throw new RetryException(1000L * (attempt + 1));
+                if (digest != null) {
+                    StringBuilder actualHash = new StringBuilder(64);
+                    for (byte value : digest.digest()) actualHash.append(String.format(Locale.ROOT, "%02x", value & 0xff));
+                    if (!actualHash.toString().equalsIgnoreCase(expectedHash))
+                        throw new PermanentException("Dosya doğrulanamadı. Yeniden deneyin.");
+                }
                 cancel.check();
                 destination.complete();
                 progress.update(bytes, bytes);

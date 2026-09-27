@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace Yandex;
@@ -209,9 +210,29 @@ public sealed class DiskClient : IDisposable
                 progress?.Report(new(file, TransferState.Downloading, 0, file.Size));
                 using var address = await GetJsonAsync($"{Api}/download?public_key={Uri.EscapeDataString(link)}&path={Uri.EscapeDataString(file.Path)}", token).ConfigureAwait(false);
                 string? href = GetString(address.RootElement, "href");
+                string? expectedHash = null;
+                long? originalSize = null;
                 if (string.IsNullOrWhiteSpace(href))
-                    throw new DiskException("İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.");
+                {
+                    using var metadata = await GetJsonAsync(ResourceUrl(link, file.Path, 0), token).ConfigureAwait(false);
+                    var resource = metadata.RootElement;
+                    string? hash = GetString(resource, "sha256");
+                    if (GetString(resource, "type") == "file" && hash is { Length: 64 } && hash.All(Uri.IsHexDigit) &&
+                        resource.TryGetProperty("size", out var size) && size.TryGetInt64(out long length) && length >= 0)
+                    {
+                        href = GetString(resource, "file");
+                        if (string.IsNullOrWhiteSpace(href) && !file.IsVideo &&
+                            resource.TryGetProperty("sizes", out var sizes) && sizes.ValueKind == JsonValueKind.Array)
+                            href = sizes.EnumerateArray().Where(item => GetString(item, "name") == "ORIGINAL")
+                                .Select(item => GetString(item, "url")).FirstOrDefault(url => !string.IsNullOrWhiteSpace(url));
+                        expectedHash = hash;
+                        originalSize = length;
+                    }
+                    if (string.IsNullOrWhiteSpace(href))
+                        throw new DiskException("İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.");
+                }
                 ValidateHttps(href);
+                using var digest = expectedHash is null ? null : IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                 using var response = await SendAsync(href, token).ConfigureAwait(false);
                 if (IsTransient(response.StatusCode) || response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
                     throw new TransferException(RetryAfter(response));
@@ -244,6 +265,7 @@ public sealed class DiskClient : IDisposable
                             if (length == 0)
                                 break;
                             await destination.WriteAsync(buffer.AsMemory(0, length), token).ConfigureAwait(false);
+                            digest?.AppendData(buffer, 0, length);
                             bytes += length;
                             if (timer.ElapsedMilliseconds >= 100)
                             {
@@ -251,8 +273,11 @@ public sealed class DiskClient : IDisposable
                                 timer.Restart();
                             }
                         }
-                        if ((contentLength is not null && bytes != contentLength) || (file.Size > 0 && bytes != file.Size))
+                        if ((contentLength is not null && bytes != contentLength) || (file.Size > 0 && bytes != file.Size) ||
+                            (originalSize is not null && bytes != originalSize))
                             throw new TransferException();
+                        if (digest is not null && !Convert.ToHexString(digest.GetHashAndReset()).Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+                            throw new DiskException("Dosya doğrulanamadı. Yeniden deneyin.");
                         await destination.FlushAsync(token).ConfigureAwait(false);
                     }
                     finally
