@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+**/publish/
+**/build/
+**/.gradle/
+**/.idea/
+**/local.properties
+.signing/
+*.jks
+*.keystore
+*.user
+*.suo
+release/
+logs/

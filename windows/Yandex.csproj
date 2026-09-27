@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>Yandex</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="Tests\**\*.cs" />
+    <Compile Remove="githuba yüklenicekler\**\*.cs" />
+    <Page Remove="Tests\**\*.xaml" />
+    <Page Remove="githuba yüklenicekler\**\*.xaml" />
+    <ApplicationDefinition Remove="githuba yüklenicekler\**\*.xaml" />
+    <None Remove="Tests\**;publish\**" />
+    <None Remove="android\**;githuba yüklenicekler\**;.signing\**" />
+  </ItemGroup>
+</Project>

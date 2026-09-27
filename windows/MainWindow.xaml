@@ -1,0 +1,179 @@
+<Window x:Class="Yandex.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Yandex"
+        Title="Yandex" Width="1120" Height="820" MinWidth="760" MinHeight="500"
+        WindowStartupLocation="CenterScreen" Background="#0B1019"
+        FontFamily="Segoe UI" FontSize="14" Foreground="#EDF2FA"
+        Closing="Window_Closing">
+  <Grid Margin="28,24">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+    <Grid Margin="0,0,0,24">
+      <TextBlock Text="Yandex" FontSize="28" FontWeight="SemiBold" />
+      <TextBlock Text="Poyrax" FontSize="13" FontWeight="SemiBold" Foreground="#93A1B7"
+                 HorizontalAlignment="Right" VerticalAlignment="Center" />
+    </Grid>
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <TextBox x:Name="LinkBox" AutomationProperties.Name="Bağlantı" KeyDown="LinkBox_KeyDown" />
+      <Button x:Name="ListButton" Grid.Column="1" Content="Listele" Margin="12,0,0,0"
+              Background="{StaticResource Accent}" Foreground="White" BorderBrush="{StaticResource Accent}"
+              Click="ListButton_Click" />
+    </Grid>
+    <Grid Grid.Row="2" Margin="0,16,0,20">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <Button x:Name="FolderButton" Content="Klasör seç" Click="FolderButton_Click" />
+      <TextBlock x:Name="FolderText" Grid.Column="1" Margin="12,0" VerticalAlignment="Center"
+                 Foreground="#93A1B7" TextTrimming="CharacterEllipsis" />
+      <Button x:Name="SelectedButton" Grid.Column="2" Content="Seçilenleri indir" IsEnabled="False"
+              Click="SelectedButton_Click" />
+      <Button x:Name="AllButton" Grid.Column="3" Content="Tümünü indir" Margin="10,0,0,0" IsEnabled="False"
+              Background="{StaticResource Accent}" Foreground="White" BorderBrush="{StaticResource Accent}"
+              Click="AllButton_Click" />
+    </Grid>
+    <ListBox x:Name="Gallery" Grid.Row="3" Background="Transparent" BorderThickness="0"
+             ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+             ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True"
+             VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.CacheLength="0"
+             SizeChanged="Gallery_SizeChanged" Focusable="False">
+      <ListBox.ItemsPanel>
+        <ItemsPanelTemplate>
+          <VirtualizingStackPanel />
+        </ItemsPanelTemplate>
+      </ListBox.ItemsPanel>
+      <ListBox.ItemContainerStyle>
+        <Style TargetType="ListBoxItem">
+          <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+          <Setter Property="Padding" Value="0" />
+          <Setter Property="Margin" Value="0" />
+          <Setter Property="Focusable" Value="False" />
+          <Setter Property="Template">
+            <Setter.Value>
+              <ControlTemplate TargetType="ListBoxItem">
+                <ContentPresenter />
+              </ControlTemplate>
+            </Setter.Value>
+          </Setter>
+        </Style>
+      </ListBox.ItemContainerStyle>
+      <ListBox.ItemTemplate>
+        <DataTemplate DataType="{x:Type local:FileRow}">
+          <ItemsControl ItemsSource="{Binding Items}" HorizontalAlignment="Left">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <StackPanel Orientation="Horizontal" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate DataType="{x:Type local:FileItem}">
+                <Border Width="232" Margin="0,0,14,14" Padding="10" CornerRadius="12"
+                        Background="#141C29" Loaded="Card_Loaded" DataContextChanged="Card_DataContextChanged">
+                  <Border.Style>
+                    <Style TargetType="Border">
+                      <Setter Property="BorderBrush" Value="#263247" />
+                      <Setter Property="BorderThickness" Value="1" />
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                          <Setter Property="BorderBrush" Value="#5B8CFF" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </Border.Style>
+                  <Grid>
+                    <Grid.RowDefinitions>
+                      <RowDefinition Height="146" />
+                      <RowDefinition Height="Auto" />
+                      <RowDefinition Height="20" />
+                      <RowDefinition Height="20" />
+                      <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Border Background="#0D1420" CornerRadius="8" ClipToBounds="True">
+                      <Grid>
+                        <TextBlock Text="{Binding Icon}" FontFamily="Segoe MDL2 Assets" FontSize="36"
+                                   Foreground="#657691" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Image Source="{Binding Thumbnail}" Stretch="Uniform" />
+                      </Grid>
+                    </Border>
+                    <CheckBox Grid.Row="1" IsChecked="{Binding IsSelected, Mode=TwoWay}" Margin="0,12,0,5"
+                              VerticalContentAlignment="Center" Checked="Selection_Changed" Unchecked="Selection_Changed"
+                              AutomationProperties.Name="{Binding Name}">
+                      <TextBlock Text="{Binding Name}" Width="180" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
+                    </CheckBox>
+                    <TextBlock Grid.Row="2" Text="{Binding Folder}" Foreground="#93A1B7" FontSize="12" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Row="3" Text="{Binding SizeText}" Foreground="#93A1B7" FontSize="12" />
+                    <StackPanel Grid.Row="4" Margin="0,4,0,0">
+                      <StackPanel.Style>
+                        <Style TargetType="StackPanel">
+                          <Setter Property="Visibility" Value="Visible" />
+                          <Style.Triggers>
+                            <DataTrigger Binding="{Binding State}" Value="{x:Static local:TransferState.Waiting}">
+                              <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                          </Style.Triggers>
+                        </Style>
+                      </StackPanel.Style>
+                      <ProgressBar Value="{Binding Percent, Mode=OneWay}" IsIndeterminate="{Binding IsIndeterminate}" Height="3"
+                                   Foreground="{StaticResource Accent}" Background="#263247" BorderThickness="0">
+                        <ProgressBar.Style>
+                          <Style TargetType="ProgressBar">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding State}" Value="{x:Static local:TransferState.Downloading}">
+                                <Setter Property="Visibility" Value="Visible" />
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </ProgressBar.Style>
+                      </ProgressBar>
+                      <TextBlock Text="{Binding Status}" TextWrapping="Wrap" FontSize="12" Margin="0,4,0,0">
+                        <TextBlock.Style>
+                          <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="#93A1B7" />
+                            <Style.Triggers>
+                              <DataTrigger Binding="{Binding State}" Value="{x:Static local:TransferState.Failed}">
+                                <Setter Property="Foreground" Value="#FF8E91" />
+                              </DataTrigger>
+                              <DataTrigger Binding="{Binding State}" Value="{x:Static local:TransferState.Completed}">
+                                <Setter Property="Foreground" Value="#70D7AE" />
+                              </DataTrigger>
+                            </Style.Triggers>
+                          </Style>
+                        </TextBlock.Style>
+                      </TextBlock>
+                    </StackPanel>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+    <Grid Grid.Row="4" Margin="0,12,0,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <StackPanel VerticalAlignment="Center">
+        <TextBlock x:Name="StatusText" TextWrapping="Wrap" Foreground="#93A1B7" />
+        <ProgressBar x:Name="TotalProgress" Height="4" Margin="0,8,16,0" Visibility="Collapsed"
+                     Foreground="{StaticResource Accent}" Background="#263247" BorderThickness="0" />
+      </StackPanel>
+      <Button x:Name="CancelButton" Grid.Column="1" Content="İptal" Visibility="Collapsed" Click="CancelButton_Click" />
+    </Grid>
+  </Grid>
+</Window>

@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace = 'com.poyrax.yandex'
+    compileSdk = 37
+
+    defaultConfig {
+        applicationId = 'com.poyrax.yandex'
+        minSdk = 26
+        targetSdk = 37
+        versionCode = 1
+        versionName = '1.0.0'
+        testInstrumentationRunner = 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    signingConfigs {
+        release {
+            if (System.getenv('YANDEX_KEYSTORE')) {
+                storeFile = file(System.getenv('YANDEX_KEYSTORE'))
+                storePassword = System.getenv('YANDEX_STORE_PASSWORD')
+                keyAlias = 'poyrax'
+                keyPassword = System.getenv('YANDEX_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.release
+            minifyEnabled = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.recyclerview:recyclerview:1.4.0'
+    implementation 'androidx.documentfile:documentfile:1.1.0'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+}
