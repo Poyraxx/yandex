@@ -10,6 +10,9 @@ import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.CookieManager;
+import java.net.CookiePolicy;
+import java.net.HttpCookie;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -22,12 +25,16 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.IntConsumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class DiskClient {
+    private final ThreadLocal<CookieManager> cookies = ThreadLocal.withInitial(() -> new CookieManager(null, CookiePolicy.ACCEPT_ORIGINAL_SERVER));
     private static final String API = "https://cloud-api.yandex.net/v1/disk/public/resources";
     private static final Set<String> IMAGES = new HashSet<>(Arrays.asList("jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "svg", "avif", "heic", "heif", "ico", "jxl"));
     private static final Set<String> VIDEOS = new HashSet<>(Arrays.asList("mp4", "mov", "mkv", "avi", "webm", "m4v", "wmv", "mpeg", "mpg", "3gp", "mts", "m2ts", "ts", "vob", "ogv", "flv"));
@@ -158,7 +165,16 @@ public class DiskClient {
                         originalSize = size;
                     }
                     if (!(href instanceof String) || ((String) href).trim().isEmpty())
-                        throw new PermanentException("İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.");
+                    {
+                        if (!file.video)
+                            throw new PermanentException("İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.");
+                        long bytes = downloadVideo(link, file, destination, cancel, progress);
+                        cancel.check();
+                        int dot = file.name.lastIndexOf('.');
+                        destination.complete((dot > 0 ? file.name.substring(0, dot) : file.name) + ".ts");
+                        progress.update(bytes, bytes);
+                        return;
+                    }
                     try { digest = MessageDigest.getInstance("SHA-256"); }
                     catch (NoSuchAlgorithmException e) { throw new PermanentException("Dosya doğrulanamadı. Yeniden deneyin."); }
                 }
@@ -210,6 +226,116 @@ public class DiskClient {
         }
     }
 
+    private long downloadVideo(String link, MediaFile file, Destination destination, Cancellation cancel, TransferProgress progress) throws IOException {
+        String page = text(link, cancel);
+        String playlistUrl = null;
+        try {
+            Matcher match = Pattern.compile("<script[^>]+id=[\"']store-prefetch[\"'][^>]*>\\s*(\\{.+?\\})\\s*</script>", Pattern.DOTALL).matcher(page);
+            if (!match.find()) throw new PermanentException("Video adresi alınamadı.");
+            JSONObject store = new JSONObject(match.group(1));
+            JSONObject resource = store.getJSONObject("resources").getJSONObject(store.getString("rootResourceId"));
+            JSONObject environment = store.getJSONObject("environment");
+            String hash = resource.optString("path", "");
+            if (!"file".equals(resource.optString("type"))) hash = required(resource, "hash") + ":" + file.path;
+            else if (hash.trim().isEmpty()) hash = required(resource, "hash");
+            String uid = environment.optString("yandexuid", "");
+            String cookie = uid.matches("[0-9]{1,32}") ? "yandexuid=" + uid : null;
+            String body = new JSONObject().put("hash", hash).put("sk", required(environment, "sk")).toString();
+            URL origin = new URL(link);
+            JSONArray videos = json("https://" + origin.getHost() + "/public/api/get-video-streams", cancel, body, cookie).getJSONObject("data").getJSONArray("videos");
+            int highest = -1;
+            for (int i = 0; i < videos.length(); i++) {
+                JSONObject video = videos.optJSONObject(i);
+                if (video == null || "adaptive".equals(video.optString("dimension"))) continue;
+                JSONObject size = video.optJSONObject("size");
+                int height = size == null ? 0 : size.optInt("height", 0);
+                if (height > highest && video.opt("url") instanceof String && !video.optString("url").trim().isEmpty()) {
+                    highest = height;
+                    playlistUrl = video.optString("url");
+                }
+            }
+        } catch (JSONException e) { throw new PermanentException("Video adresi alınamadı."); }
+        if (playlistUrl == null) throw new PermanentException("Video adresi alınamadı.");
+        URL playlistAddress = new URL(playlistUrl);
+        if (!"https".equals(playlistAddress.getProtocol()) || playlistAddress.getUserInfo() != null)
+            throw new PermanentException("İndirme bağlantısı alınamadı.");
+        String playlist = text(playlistUrl, cancel).replaceFirst("^\\uFEFF", "");
+        String[] lines = playlist.split("\\r?\\n");
+        List<String> segments = new ArrayList<>();
+        boolean end = false;
+        boolean header = false;
+        for (String raw : lines) {
+            String line = raw.trim();
+            if (line.isEmpty()) continue;
+            if (!header) {
+                if (!line.equals("#EXTM3U")) throw new PermanentException("Bu video akışı desteklenmiyor.");
+                header = true;
+            }
+            if (line.equals("#EXT-X-ENDLIST")) end = true;
+            if (line.startsWith("#EXT-X-MAP:") || line.startsWith("#EXT-X-BYTERANGE:") || line.equals("#EXT-X-DISCONTINUITY") ||
+                    line.startsWith("#EXT-X-KEY:") && !line.equals("#EXT-X-KEY:METHOD=NONE")) throw new PermanentException("Bu video akışı desteklenmiyor.");
+            if (!line.startsWith("#")) segments.add(line);
+        }
+        if (!header || !end || segments.isEmpty()) throw new PermanentException("Bu video akışı desteklenmiyor.");
+        long bytes = 0;
+        long lastUpdate = System.nanoTime();
+        try (OutputStream output = destination.open("video/mp2t")) {
+            byte[] buffer = new byte[131072];
+            for (int index = 0; index < segments.size(); index++) {
+                cancel.check();
+                HttpURLConnection connection = null;
+                try {
+                    URL segmentAddress = new URL(playlistAddress, segments.get(index));
+                    if (!"https".equals(segmentAddress.getProtocol()) || segmentAddress.getUserInfo() != null)
+                        throw new PermanentException("İndirme bağlantısı alınamadı.");
+                    connection = open(segmentAddress.toString(), cancel);
+                    int code = connection.getResponseCode();
+                    if (transientStatus(code) || code == 403 || code == 401) throw new RetryException(delay(connection, 0));
+                    checkStatus(code);
+                    long length = connection.getContentLengthLong();
+                    long expected = Math.max(bytes + 1, (long) ((bytes + Math.max(0, length)) * (double) segments.size() / (index + 1)));
+                    long segmentBytes = 0;
+                    try (InputStream source = connection.getInputStream()) {
+                        while (true) {
+                            cancel.check();
+                            int count = source.read(buffer);
+                            if (count < 0) break;
+                            cancel.check();
+                            for (int offset = (int) ((188 - segmentBytes % 188) % 188); offset < count; offset += 188)
+                                if (buffer[offset] != 0x47) throw new PermanentException("Bu video akışı desteklenmiyor.");
+                            output.write(buffer, 0, count);
+                            segmentBytes += count;
+                            bytes += count;
+                            if (System.nanoTime() - lastUpdate > 100_000_000L) {
+                                progress.update(bytes, Math.max(bytes + 1, expected));
+                                lastUpdate = System.nanoTime();
+                            }
+                        }
+                    }
+                    if (segmentBytes == 0 || segmentBytes % 188 != 0 || length >= 0 && segmentBytes != length) throw new RetryException(1000);
+                    progress.update(bytes, Math.max(bytes, expected));
+                } finally { if (connection != null) cancel.release(connection); }
+            }
+            output.flush();
+        }
+        return bytes;
+    }
+
+    private String text(String url, Cancellation cancel) throws IOException {
+        HttpURLConnection connection = null;
+        try {
+            connection = open(url, cancel);
+            applyCookies(connection);
+            int code = connection.getResponseCode();
+            rememberCookies(connection);
+            if (transientStatus(code) || code == 403 || code == 401) throw new RetryException(delay(connection, 0));
+            checkStatus(code);
+            try (InputStream source = connection.getInputStream()) {
+                return new String(readLimited(source, 8 * 1024 * 1024, cancel), StandardCharsets.UTF_8);
+            }
+        } finally { if (connection != null) cancel.release(connection); }
+    }
+
     public byte[] preview(String url, Cancellation cancel) {
         HttpURLConnection connection = null;
         try {
@@ -228,12 +354,29 @@ public class DiskClient {
     }
 
     private JSONObject json(String url, Cancellation cancel) throws IOException {
+        return json(url, cancel, null, null);
+    }
+
+    private JSONObject json(String url, Cancellation cancel, String body, String cookie) throws IOException {
         for (int attempt = 0; ; attempt++) {
             HttpURLConnection connection = null;
             try {
                 cancel.check();
+                if (cookie != null) {
+                    for (HttpCookie value : HttpCookie.parse(cookie)) cookies.get().getCookieStore().add(URI.create(url), value);
+                }
                 connection = open(url, cancel);
+                applyCookies(connection);
+                if (body != null) {
+                    byte[] data = body.getBytes(StandardCharsets.UTF_8);
+                    connection.setRequestMethod("POST");
+                    connection.setDoOutput(true);
+                    connection.setRequestProperty("Content-Type", "text/plain; charset=UTF-8");
+                    connection.setFixedLengthStreamingMode(data.length);
+                    try (OutputStream output = connection.getOutputStream()) { output.write(data); }
+                }
                 int code = connection.getResponseCode();
+                rememberCookies(connection);
                 if (transientStatus(code)) throw new RetryException(delay(connection, attempt));
                 checkStatus(code);
                 try (InputStream stream = connection.getInputStream()) {
@@ -260,8 +403,19 @@ public class DiskClient {
         connection.setReadTimeout(45000);
         connection.setInstanceFollowRedirects(true);
         connection.setRequestProperty("Accept-Encoding", "identity");
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0");
         cancel.track(connection);
         return connection;
+    }
+
+    private void applyCookies(HttpURLConnection connection) throws IOException {
+        Map<String, List<String>> headers = cookies.get().get(URI.create(connection.getURL().toString()), java.util.Collections.emptyMap());
+        for (Map.Entry<String, List<String>> header : headers.entrySet())
+            connection.setRequestProperty(header.getKey(), String.join("; ", header.getValue()));
+    }
+
+    private void rememberCookies(HttpURLConnection connection) throws IOException {
+        cookies.get().put(URI.create(connection.getURL().toString()), connection.getHeaderFields());
     }
 
     private static byte[] readLimited(InputStream source, int maximum, Cancellation cancel) throws IOException {
@@ -332,7 +486,9 @@ public class DiskClient {
 
     public interface Destination {
         OutputStream open() throws IOException;
+        default OutputStream open(String mime) throws IOException { return open(); }
         void complete() throws IOException;
+        default void complete(String name) throws IOException { complete(); }
         void abort() throws IOException;
     }
 

@@ -23,10 +23,12 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -91,6 +93,25 @@ public class AppTest {
     }
 
     @Test
+    public void playbackDownloadsUseTsMimeAndKeepExistingFiles() throws Exception {
+        Session session = launch(false, false, true);
+        try {
+            assertNotNull(session.folder.createFile("video/mp2t", "Film.ts"));
+            list(session.activity);
+            until(() -> findText(session.activity, "3 dosya") != null);
+            instrumentation.runOnMainSync(() -> ((Button) findText(session.activity, "Tümünü indir")).performClick());
+            until(() -> findText(session.activity, "3 indirildi") != null && !session.activity.downloadService.running);
+            DocumentFile video = session.folder.findFile("Film (1).ts");
+            assertNotNull(video);
+            assertEquals("video/mp2t", video.getType());
+            assertEquals(188 * 6, video.length());
+            assertNotNull(session.folder.findFile("Film.ts"));
+            assertNull(session.folder.findFile("Film.mp4"));
+            assertEquals(4, countFiles(session.folder));
+        } finally { close(session.activity); }
+    }
+
+    @Test
     public void cancelRemovesPartialFiles() throws Exception {
         Session session = launch(true, false);
         try {
@@ -105,6 +126,10 @@ public class AppTest {
     }
 
     private Session launch(boolean slow, boolean blocked) throws Exception {
+        return launch(slow, blocked, false);
+    }
+
+    private Session launch(boolean slow, boolean blocked, boolean playback) throws Exception {
         Context target = instrumentation.getTargetContext();
         if (android.os.Build.VERSION.SDK_INT >= 33) instrumentation.getUiAutomation().grantRuntimePermission(target.getPackageName(), "android.permission.POST_NOTIFICATIONS");
         Intent intent = new Intent(target, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
@@ -121,7 +146,7 @@ public class AppTest {
                 Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
         instrumentation.getTargetContext().grantUriPermission(target.getPackageName(), DocumentsContract.buildDocumentUriUsingTree(folderUri, DocumentsContract.getTreeDocumentId(folderUri)),
                 Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
-        FakeClient client = new FakeClient(slow, blocked);
+        FakeClient client = new FakeClient(slow, blocked, playback);
         instrumentation.runOnMainSync(() -> {
             activity.client = client;
             activity.downloadService.client = client;
@@ -195,8 +220,9 @@ public class AppTest {
     private static final class FakeClient extends DiskClient {
         final boolean slow;
         final boolean blocked;
+        final boolean playback;
         final byte[] preview = createPreview();
-        FakeClient(boolean slow, boolean blocked) { this.slow = slow; this.blocked = blocked; }
+        FakeClient(boolean slow, boolean blocked, boolean playback) { this.slow = slow; this.blocked = blocked; this.playback = playback; }
 
         @Override
         protected HttpURLConnection open(String address, Cancellation cancel) throws IOException {
@@ -204,9 +230,19 @@ public class AppTest {
             int status = 200;
             boolean thumbnail = address.startsWith("https://preview.test");
             if (thumbnail) body = preview;
+            else if (playback && address.equals(LINK)) {
+                body = ("<script id=\"store-prefetch\">{\"rootResourceId\":\"root\",\"resources\":{\"root\":{\"type\":\"dir\",\"hash\":\"public-hash\"}},\"environment\":{\"sk\":\"public-sk\",\"yandexuid\":\"123\"}}</script>").getBytes(StandardCharsets.UTF_8);
+            } else if (playback && address.endsWith("get-video-streams")) {
+                body = "{\"data\":{\"videos\":[{\"dimension\":\"1080p\",\"size\":{\"height\":1080},\"url\":\"https://download.test/hls/index.m3u8\"}]}}".getBytes(StandardCharsets.UTF_8);
+            } else if (playback && address.endsWith("index.m3u8")) {
+                body = "#EXTM3U\n1.ts\n2.ts\n#EXT-X-ENDLIST\n".getBytes(StandardCharsets.UTF_8);
+            } else if (playback && address.endsWith(".ts")) {
+                body = new byte[188 * 3];
+                for (int i = 0; i < body.length; i += 188) body[i] = 0x47;
+            }
             else if (address.contains("/resources/download")) {
                 String path = URLDecoder.decode(address.substring(address.indexOf("&path=") + 6), "UTF-8");
-                body = (blocked && path.equals("/Kapali.jpg") ? "{\"method\":\"GET\",\"href\":\"\",\"templated\":false}" :
+                body = (blocked && path.equals("/Kapali.jpg") || playback && path.equals("/Film.mp4") ? "{\"method\":\"GET\",\"href\":\"\",\"templated\":false}" :
                         "{\"href\":\"https://download.test/file\"}").getBytes(StandardCharsets.UTF_8);
             } else if (address.contains("/resources?")) {
                 try {
@@ -229,6 +265,7 @@ public class AppTest {
                 @Override public int getResponseCode() { return code; }
                 @Override public String getContentType() { return thumbnail ? "image/png" : "application/octet-stream"; }
                 @Override public long getContentLengthLong() { return slow && transfer ? 16 * 1024 * 1024 : reply.length; }
+                @Override public OutputStream getOutputStream() { return new ByteArrayOutputStream(); }
                 @Override public InputStream getInputStream() {
                     if (!slow || !transfer) return new ByteArrayInputStream(reply);
                     return new InputStream() {

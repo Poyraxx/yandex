@@ -18,6 +18,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.Assert.*;
 
@@ -171,6 +176,7 @@ public class DiskClientTest {
             Fake client = new Fake(url -> {
                 if (url.contains("/resources/download")) return response("{\"href\":\"\"}");
                 if (url.contains("/resources?")) return response(metadata.toString());
+                if (url.startsWith("https://disk.yandex.com/")) return response("<html></html>");
                 transfers.incrementAndGet();
                 return new Reply(200, PAYLOAD, "image/jpeg");
             });
@@ -202,6 +208,118 @@ public class DiskClientTest {
         StringBuilder result = new StringBuilder(64);
         for (byte value : MessageDigest.getInstance("SHA-256").digest(PAYLOAD)) result.append(String.format("%02x", value & 0xff));
         return result.toString();
+    }
+
+    private static final byte[] VIDEO_PAYLOAD = videoPayload();
+
+    private static byte[] videoPayload() {
+        byte[] bytes = new byte[188 * 3];
+        for (int i = 0; i < bytes.length; i++) bytes[i] = (byte) (i % 188 == 0 ? 0x47 : 1);
+        return bytes;
+    }
+
+    private static MediaFile video() { return new MediaFile("film.mp4", "/film.mp4", Arrays.asList("film.mp4"), PAYLOAD.length, true, "", "video/mp4"); }
+
+    private static Fake videoClient(Route route) {
+        return new Fake(url -> {
+            if (url.contains("cloud-api.yandex.net")) return response("{\"href\":\"\"}");
+            if (url.equals(LINK)) {
+                JSONObject store = new JSONObject().put("rootResourceId", "root").put("resources", new JSONObject().put("root", new JSONObject().put("type", "dir").put("hash", "public-hash")))
+                        .put("environment", new JSONObject().put("sk", "public-sk").put("yandexuid", "123"));
+                return response("<script id=\"store-prefetch\">" + store + "</script>");
+            }
+            return route.get(url);
+        });
+    }
+
+    private static Reply videoStreams() throws Exception {
+        JSONArray videos = new JSONArray();
+        for (String dimension : Arrays.asList("240p", "adaptive", "1080p")) {
+            videos.put(new JSONObject().put("dimension", dimension).put("size", new JSONObject().put("height", dimension.equals("1080p") ? 1080 : dimension.equals("240p") ? 240 : 0))
+                    .put("url", dimension.equals("1080p") ? "https://video.test/high/list.m3u8" : "https://video.test/low/list.m3u8"));
+        }
+        return response(new JSONObject().put("data", new JSONObject().put("videos", videos)).toString());
+    }
+
+    @Test
+    public void highestPlaybackQualityKeepsAllSegmentsAndUsesTsName() throws Exception {
+        Fake client = videoClient(url -> url.endsWith("get-video-streams") ? videoStreams() :
+                url.equals("https://video.test/high/list.m3u8") ? response("#EXTM3U\n#EXTINF:4,\n1.ts\n#EXTINF:2,\n2.ts\n#EXT-X-ENDLIST\n") :
+                url.equals("https://video.test/high/1.ts") || url.equals("https://video.test/high/2.ts") ? new Reply(200, VIDEO_PAYLOAD, "video/mp2t") : throwUnexpectedUrl(url));
+        MemoryDestination destination = new MemoryDestination();
+        List<Long> transferred = new ArrayList<>();
+        client.download(LINK, video(), destination, new DiskClient.Cancellation(), (bytes, total) -> transferred.add(bytes));
+        assertTrue(destination.completed);
+        assertEquals("film.ts", destination.name);
+        assertEquals("video/mp2t", destination.mime);
+        assertEquals(VIDEO_PAYLOAD.length * 2, destination.bytes.length);
+        assertArrayEquals(VIDEO_PAYLOAD, Arrays.copyOfRange(destination.bytes, 0, VIDEO_PAYLOAD.length));
+        assertArrayEquals(VIDEO_PAYLOAD, Arrays.copyOfRange(destination.bytes, VIDEO_PAYLOAD.length, destination.bytes.length));
+        assertTrue(transferred.contains((long) VIDEO_PAYLOAD.length));
+        assertEquals("public-hash:/film.mp4", new JSONObject(client.posts.get(0)).getString("hash"));
+        assertTrue(client.cookieHeaders.get(0).contains("i=anon-session-"));
+    }
+
+    private static Reply throwUnexpectedUrl(String url) { throw new AssertionError("Yanlış video adresi: " + url); }
+
+    @Test
+    public void parallelPlaybackDownloadsKeepTheirOwnAnonymousSessions() throws Exception {
+        Fake client = videoClient(url -> url.endsWith("get-video-streams") ? videoStreams() :
+                url.endsWith(".m3u8") ? response("#EXTM3U\n1.ts\n#EXT-X-ENDLIST\n") : new Reply(200, VIDEO_PAYLOAD, "video/mp2t"));
+        client.pageReady = new CyclicBarrier(2);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<MemoryDestination>> transfers = new ArrayList<>();
+            for (int i = 0; i < 2; i++) transfers.add(workers.submit(() -> {
+                MemoryDestination destination = new MemoryDestination();
+                client.download(LINK, video(), destination, new DiskClient.Cancellation(), (bytes, total) -> {});
+                return destination;
+            }));
+            for (Future<MemoryDestination> transfer : transfers) {
+                MemoryDestination destination = transfer.get(10, TimeUnit.SECONDS);
+                assertTrue(destination.completed);
+                assertArrayEquals(VIDEO_PAYLOAD, destination.bytes);
+            }
+        } finally { workers.shutdownNow(); }
+    }
+
+    @Test
+    public void failedVideoSegmentsRefreshThePlaybackAddress() throws Exception {
+        AtomicInteger addresses = new AtomicInteger();
+        AtomicInteger attempts = new AtomicInteger();
+        Fake client = videoClient(url -> {
+            if (url.endsWith("get-video-streams")) { addresses.incrementAndGet(); return videoStreams(); }
+            if (url.endsWith(".m3u8")) return response("#EXTM3U\n1.ts\n#EXT-X-ENDLIST\n");
+            return attempts.incrementAndGet() == 1 ? new Reply(403, new byte[0], "text/plain") : new Reply(200, VIDEO_PAYLOAD, "video/mp2t");
+        });
+        MemoryDestination destination = new MemoryDestination();
+        client.download(LINK, video(), destination, new DiskClient.Cancellation(), (bytes, total) -> {});
+        assertEquals(2, addresses.get());
+        assertTrue(destination.completed);
+        assertArrayEquals(VIDEO_PAYLOAD, destination.bytes);
+    }
+
+    @Test
+    public void cancelledVideoSegmentsAreNotCompleted() throws Exception {
+        Fake client = videoClient(url -> url.endsWith("get-video-streams") ? videoStreams() :
+                url.endsWith(".m3u8") ? response("#EXTM3U\n1.ts\n2.ts\n#EXT-X-ENDLIST\n") : new Reply(200, VIDEO_PAYLOAD, "video/mp2t"));
+        MemoryDestination destination = new MemoryDestination();
+        DiskClient.Cancellation cancel = new DiskClient.Cancellation();
+        assertThrows(IOException.class, () -> client.download(LINK, video(), destination, cancel, (bytes, total) -> { if (bytes > 0) cancel.cancel(); }));
+        assertFalse(destination.completed);
+        assertNull(destination.output);
+    }
+
+    @Test
+    public void incompleteEncryptedAndInvalidPlaybackStreamsAreRejected() throws Exception {
+        for (String playlist : Arrays.asList("#EXTM3U\n1.ts", "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES\n1.ts\n#EXT-X-ENDLIST", "#EXTM3U\n#EXT-X-MAP:URI=init.mp4\n1.ts\n#EXT-X-ENDLIST", "#EXTM3U\nfile:///outside\n#EXT-X-ENDLIST", "#EXTM3U\n1.ts\n#EXT-X-ENDLIST")) {
+            Fake client = videoClient(url -> url.endsWith("get-video-streams") ? videoStreams() :
+                    url.endsWith(".m3u8") ? response(playlist) : url.startsWith("https://video.test/") ? new Reply(200, PAYLOAD, "video/mp2t") : throwUnexpectedUrl(url));
+            MemoryDestination destination = new MemoryDestination();
+            assertThrows(IOException.class, () -> client.download(LINK, video(), destination, new DiskClient.Cancellation(), (bytes, total) -> {}));
+            assertFalse(destination.completed);
+            assertNull(destination.output);
+        }
     }
 
     @Test
@@ -276,6 +394,9 @@ public class DiskClientTest {
 
     private static class Fake extends DiskClient {
         final Route route;
+        final List<String> posts = java.util.Collections.synchronizedList(new ArrayList<>());
+        final List<String> cookieHeaders = java.util.Collections.synchronizedList(new ArrayList<>());
+        CyclicBarrier pageReady;
         Fake(Route route) { this.route = route; }
         @Override
         protected HttpURLConnection open(String url, Cancellation cancel) throws IOException {
@@ -283,11 +404,28 @@ public class DiskClientTest {
             try { reply = route.get(url); }
             catch (Exception e) { throw new IOException(e); }
             HttpURLConnection connection = new HttpURLConnection(new URL(url)) {
-                @Override public int getResponseCode() { return reply.code; }
+                @Override public int getResponseCode() {
+                    if (getURL().toString().endsWith("get-video-streams")) {
+                        String cookie = getRequestProperty("Cookie");
+                        cookieHeaders.add(cookie);
+                        assertNotNull(cookie);
+                        assertTrue(cookie.contains("i=anon-session-" + Thread.currentThread().getId()));
+                    }
+                    return reply.code;
+                }
                 @Override public String getContentType() { return reply.type; }
                 @Override public long getContentLengthLong() { return reply.body.length; }
                 @Override public String getHeaderField(String name) { return name.equals("Retry-After") ? "0" : null; }
-                @Override public InputStream getInputStream() { return new ByteArrayInputStream(reply.body); }
+                @Override public InputStream getInputStream() throws IOException {
+                    if (getURL().toString().equals(LINK) && pageReady != null) {
+                        try { pageReady.await(5, TimeUnit.SECONDS); }
+                        catch (Exception e) { throw new IOException(e); }
+                    }
+                    return new ByteArrayInputStream(reply.body);
+                }
+                @Override public java.util.Map<String, List<String>> getHeaderFields() { return getURL().toString().equals(LINK)
+                        ? java.util.Collections.singletonMap("Set-Cookie", Arrays.asList("i=anon-session-" + Thread.currentThread().getId() + "; Path=/; Secure")) : java.util.Collections.emptyMap(); }
+                @Override public OutputStream getOutputStream() { return new ByteArrayOutputStream() { @Override public void close() { posts.add(new String(toByteArray(), StandardCharsets.UTF_8)); } }; }
                 @Override public void disconnect() {}
                 @Override public boolean usingProxy() { return false; }
                 @Override public void connect() {}
@@ -308,8 +446,12 @@ public class DiskClientTest {
         ByteArrayOutputStream output;
         byte[] bytes;
         boolean completed;
+        String name;
+        String mime;
         @Override public OutputStream open() { output = new ByteArrayOutputStream(); return output; }
+        @Override public OutputStream open(String mime) { this.mime = mime; return open(); }
         @Override public void complete() { bytes = output.toByteArray(); completed = true; }
+        @Override public void complete(String name) { this.name = name; complete(); }
         @Override public void abort() { output = null; }
     }
 }

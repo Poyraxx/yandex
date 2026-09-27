@@ -31,7 +31,7 @@ The app may ask for notification permission to show download progress and a canc
 4. Check files and press **Seçilenleri indir** (Download selected), or use **Tümünü indir** (Download all).
 5. Press **İptal** (Cancel) to stop.
 
-Single files and nested folders are supported. Videos and images appear in one gallery; downloads preserve their folder structure. Other file types are skipped. Files are saved without conversion. Existing files are kept, with new copies named like `photo (1).jpg`. Up to two files download at once, directly to storage.
+Single files and nested folders are supported. Videos and images appear in one gallery; downloads preserve their folder structure. Other file types are skipped. Original downloads keep their format. Existing files are kept, with new copies named like `photo (1).jpg`. Up to two files download at once, directly to storage.
 
 Cancelling keeps completed files and removes incomplete files. Temporary network failures are retried a limited number of times. A failed file does not stop the others; its error appears in the gallery. Downloads remain disabled if a folder scan is incomplete.
 
@@ -41,9 +41,13 @@ On Android, downloads continue in the background with a notification. They do no
 
 ### Supported links
 
-Links must be public. If the standard download endpoint returns no address, the app checks for an original file address in Yandex's metadata. Images can also use the `ORIGINAL` address. These downloads are saved only if their size and SHA-256 match the metadata. This can work for some shares with downloading disabled; it is not guaranteed for every file or share. Video playback streams and reduced previews are not saved as original files.
+Links must be public. If the standard download endpoint returns no address, the app checks for an original file address in Yandex's metadata. Images can also use the `ORIGINAL` address. These original downloads are saved only if their size and SHA-256 match the metadata.
 
-Account login, private or password protected shares, and video playback are not supported. Closed, invalid or inaccessible links show a short error. If folder permissions change, choose the folder again.
+If an original video address is unavailable, the app tries Yandex's public playback stream and selects the highest available resolution. Playback videos are saved as `.ts` files, with their audio and video copied without re-encoding. They are not the original uploaded file; their quality and size depend on Yandex's playback versions. Use a video player that supports MPEG-TS to open them. Download progress for playback streams uses an estimated total size until all segments are received.
+
+This can work for some shares with downloading disabled; it is not guaranteed for every file or share. Encrypted, live and unsupported playback streams show a short error. Reduced image previews are not saved as original files.
+
+Account login, private or password protected shares, and an in-app video player are not supported. Closed, invalid or inaccessible links show a short error. If folder permissions change, choose the folder again.
 
 ### Build from source
 
@@ -89,7 +93,9 @@ From `android`:
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
-Device tests require a connected device or emulator. Tests cover single files, nested folders, pagination, media filtering, selected and bulk downloads, filename collisions, interrupted transfers and cancellation using sample API responses. Original address checks cover hash mismatches, address expiry and rejecting reduced previews. A real image whose standard download address was empty was downloaded and verified against Yandex's SHA-256. A separate public share was also used to verify a normal Android download. Downloading restricted videos was not verified. Large file, network interruption and cancellation scenarios use sample responses.
+Device tests require a connected device or emulator. Tests cover single files, nested folders, pagination, media filtering, selected and bulk downloads, filename collisions, interrupted transfers and cancellation using sample API responses. Original address checks cover hash mismatches, address expiry and rejecting reduced previews. Playback tests check the highest resolution, complete segments, filename collisions, retries, cancellation and rejecting unsupported streams.
+
+A real image whose standard download address was empty was downloaded and verified against Yandex's SHA-256. A public share with downloading disabled returned video playback addresses, and its playlist was checked without fetching its video segments. A complete 1080p playback video from a separate public press share was downloaded; audio and video tracks were verified. Large file, network interruption and cancellation scenarios use sample responses.
 
 Screenshots below use sample test files. Listing and downloads use the [Yandex Disk REST API](https://yandex.com/dev/disk-api/doc/en/). This is an independent app, not an official Yandex product.
 
@@ -128,7 +134,7 @@ Bütün sürümler [Releases](https://github.com/Poyraxx/yandexdisk-video-downlo
 
 Tek dosya bağlantıları ve iç içe klasörler desteklenir. Alt klasörlerdeki video ve görseller aynı galeride görünür; indirilirken klasör yapısı korunur. Diğer dosya türleri indirilmez.
 
-Dosyalar dönüştürülmez. Aynı isimde bir dosya varsa mevcut dosyanın üzerine yazılmaz; yenisi `foto (1).jpg` gibi bir adla kaydedilir. En fazla iki dosya aynı anda indirilir. Büyük dosyalar doğrudan diske yazılır.
+Orijinal indirmelerde dosyanın biçimi korunur. Aynı isimde bir dosya varsa mevcut dosyanın üzerine yazılmaz; yenisi `foto (1).jpg` gibi bir adla kaydedilir. En fazla iki dosya aynı anda indirilir. Büyük dosyalar doğrudan diske yazılır.
 
 İptalde tamamlanan dosyalar kalır, yarım dosyalar temizlenir. Geçici bağlantı hataları sınırlı olarak tekrar denenir. Bir dosya indirilemezse diğerleri devam eder ve hata o dosyanın altında görünür. Bir klasör tamamen taranamazsa indirme düğmeleri açılmaz.
 
@@ -138,9 +144,13 @@ Android’de uygulama arka plandayken başlayan indirme bildirimle devam eder. U
 
 ## Desteklenen bağlantılar
 
-Paylaşımın herkese açık bir Yandex Disk bağlantısı olması gerekir. Normal indirme uç noktası adres vermiyorsa Yandex'in dosya bilgilerindeki orijinal dosya adresi kontrol edilir. Görseller için `ORIGINAL` adresi de kullanılabilir. Bu yoldan alınan dosya, boyutu ve SHA-256 değeri dosya bilgileriyle eşleşirse kaydedilir. İndirmesi kapalı bazı paylaşımlarda çalışabilir; her dosya veya paylaşım için garanti verilmez. Video oynatma akışları ve küçük önizlemeler orijinal dosya olarak kaydedilmez.
+Paylaşımın herkese açık bir Yandex Disk bağlantısı olması gerekir. Normal indirme uç noktası adres vermiyorsa Yandex'in dosya bilgilerindeki orijinal dosya adresi kontrol edilir. Görseller için `ORIGINAL` adresi de kullanılabilir. Bu yoldan alınan orijinal dosya, boyutu ve SHA-256 değeri dosya bilgileriyle eşleşirse kaydedilir.
 
-Hesap girişi, özel veya şifreli paylaşımlar ve video oynatma bulunmaz. Bağlantı kapalıysa, geçersizse veya dosyaya erişilemiyorsa uygulama kısa bir hata gösterir. Klasöre yazma izni değiştiğinde **Klasör seç** ile klasörü yeniden seçin.
+Videonun orijinal adresi bulunamazsa Yandex'in herkese açık oynatma akışı denenir ve mevcut en yüksek çözünürlük seçilir. Oynatma videoları `.ts` dosyası olarak kaydedilir; ses ve görüntü yeniden kodlanmaz. Bu dosya, yüklenen orijinal dosyanın aynısı değildir. Kalite ve boyut Yandex'in oynatma sürümlerine bağlıdır. Açmak için MPEG-TS destekleyen bir video oynatıcı kullanın. Akış indirmelerinde bütün parçalar alınana kadar toplam boyut üzerinden gösterilen ilerleme tahminidir.
+
+İndirmesi kapalı bazı paylaşımlarda çalışabilir; her dosya veya paylaşım için garanti verilmez. Şifreli, canlı veya desteklenmeyen video akışlarında kısa bir hata gösterilir. Küçük görsel önizlemeleri orijinal dosya olarak kaydedilmez.
+
+Hesap girişi, özel veya şifreli paylaşımlar ve uygulama içinde video oynatma bulunmaz. Bağlantı kapalıysa, geçersizse veya dosyaya erişilemiyorsa uygulama kısa bir hata gösterir. Klasöre yazma izni değiştiğinde **Klasör seç** ile klasörü yeniden seçin.
 
 ## Ekranlar
 
@@ -198,8 +208,10 @@ Android kontrolleri, `android` klasöründen:
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
-Cihaz testleri için bağlı bir Android cihazı veya çalışan bir emülatör gerekir. Windows’ta 25 indirme/API kontrolü ve 4 arayüz kontrolü; Android’de 18 birim testi bulunur. Galeri, indirme ve iptal için üç cihaz testi Android 8 ve Android 17 emülatörlerinde sınandı.
+Cihaz testleri için bağlı bir Android cihazı veya çalışan bir emülatör gerekir. Windows’ta 29 indirme/API kontrolü ve 4 arayüz kontrolü; Android’de 23 birim testi bulunur. Galeri, indirme, TS dosyası kaydetme ve iptal için dört cihaz testi Android 8 ve Android 17 emülatörlerinde sınandı. Eşzamanlı video indirmelerinde anonim oturumların birbirini etkilememesi de kontrol edilir.
 
-Testler tek dosya, alt klasörler, sayfalama, dosya türü ayrımı, seçili ve toplu indirme, isim çakışması, kesilen bağlantı ve iptali örnek API yanıtlarıyla kontrol eder. Orijinal adres için hash uyuşmazlığı, süresi dolan adresin yenilenmesi ve küçük önizlemelerin reddi sınanır. Normal indirme adresi boş olan gerçek bir görsel indirildi ve Yandex'in SHA-256 değeriyle eşleştiği doğrulandı. Android üzerinde ayrı bir herkese açık paylaşımda normal indirme de doğrulandı. İndirmesi kapalı videoların indirilmesi doğrulanmadı. Büyük dosya, ağ kesintisi ve iptal senaryoları gerçek paylaşım yerine örnek yanıtlarla sınandı.
+Testler tek dosya, alt klasörler, sayfalama, dosya türü ayrımı, seçili ve toplu indirme, isim çakışması, kesilen bağlantı ve iptali örnek API yanıtlarıyla kontrol eder. Orijinal adres için hash uyuşmazlığı, süresi dolan adresin yenilenmesi ve küçük önizlemelerin reddi sınanır. Video akışı testleri en yüksek çözünürlüğü, parçaların eksiksiz kaydedilmesini, isim çakışmasını, yeniden denemeyi, iptali ve desteklenmeyen akışların reddini kontrol eder.
+
+Normal indirme adresi boş olan gerçek bir görsel indirildi ve Yandex'in SHA-256 değeriyle eşleştiği doğrulandı. İndirmesi kapalı bir paylaşımda video oynatma adresleri alındı; video parçaları indirilmeden oynatma listesi kontrol edildi. Ayrı bir herkese açık basın paylaşımındaki 1080p oynatma videosu tamamen indirildi; ses ve görüntü kanalları doğrulandı. Büyük dosya, ağ kesintisi ve iptal senaryoları gerçek paylaşım yerine örnek yanıtlarla sınandı.
 
 Listeleme ve indirme için Yandex Disk’in [REST API’si](https://yandex.com/dev/disk-api/doc/en/) kullanılır. Uygulama Yandex’in resmi ürünü değildir.

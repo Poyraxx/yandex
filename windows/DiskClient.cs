@@ -5,7 +5,9 @@ using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Yandex;
 
@@ -229,7 +231,16 @@ public sealed class DiskClient : IDisposable
                         originalSize = length;
                     }
                     if (string.IsNullOrWhiteSpace(href))
-                        throw new DiskException("İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.");
+                    {
+                        if (!file.IsVideo)
+                            throw new DiskException("İndirme adresi verilmedi. Paylaşımın indirme iznini kontrol edin.");
+                        long videoBytes = await DownloadVideoAsync(link, file, temporary, progress, token).ConfigureAwait(false);
+                        token.ThrowIfCancellationRequested();
+                        EnsureFolder(target, folder);
+                        MoveToUniqueName(temporary, folder, System.IO.Path.ChangeExtension(SafeName(file.Name), ".ts"));
+                        progress?.Report(new(file, TransferState.Completed, videoBytes, videoBytes));
+                        return;
+                    }
                 }
                 ValidateHttps(href);
                 using var digest = expectedHash is null ? null : IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -308,6 +319,125 @@ public sealed class DiskClient : IDisposable
         }
     }
 
+    private async Task<long> DownloadVideoAsync(string link, MediaFile file, string temporary, IProgress<DownloadUpdate>? progress, CancellationToken token)
+    {
+        using var session = ownsHttp ? new DiskClient(retryDelay: retryDelay, idleTimeout: idleTimeout) : null;
+        var webClient = session ?? this;
+        string page = await webClient.GetTextAsync(link, token).ConfigureAwait(false);
+        string playlistUrl;
+        try
+        {
+            var match = Regex.Match(page, "<script[^>]+id=[\"']store-prefetch[\"'][^>]*>\\s*(\\{.+?\\})\\s*</script>", RegexOptions.Singleline, TimeSpan.FromSeconds(1));
+            if (!match.Success)
+                throw new DiskException("Video adresi alınamadı.");
+            using var store = JsonDocument.Parse(match.Groups[1].Value);
+            var resource = store.RootElement.GetProperty("resources").GetProperty(RequiredString(store.RootElement, "rootResourceId"));
+            var environment = store.RootElement.GetProperty("environment");
+            string hash = GetString(resource, "type") == "file" ? GetString(resource, "path") ?? RequiredString(resource, "hash")
+                : RequiredString(resource, "hash") + ":" + file.Path;
+            string? uid = GetString(environment, "yandexuid");
+            string? cookie = uid is not null && uid.Length <= 32 && uid.All(char.IsAsciiDigit) ? "yandexuid=" + uid : null;
+            string body = JsonSerializer.Serialize(new { hash, sk = RequiredString(environment, "sk") });
+            string apiUrl = new Uri(link).GetLeftPart(UriPartial.Authority) + "/public/api/get-video-streams";
+            using var streams = await webClient.GetJsonAsync(apiUrl, token, body, cookie).ConfigureAwait(false);
+            var data = streams.RootElement.GetProperty("data");
+            playlistUrl = data.GetProperty("videos").EnumerateArray()
+                .Where(video => GetString(video, "dimension") != "adaptive" && !string.IsNullOrWhiteSpace(GetString(video, "url")))
+                .OrderByDescending(video => video.TryGetProperty("size", out var size) && size.TryGetProperty("height", out var height) && height.TryGetInt64(out var value) ? value : 0)
+                .Select(video => GetString(video, "url")).FirstOrDefault() ?? throw new DiskException("Video adresi alınamadı.");
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or RegexMatchTimeoutException)
+        {
+            throw new DiskException("Video adresi alınamadı.");
+        }
+        ValidateHttps(playlistUrl);
+        string playlist = (await GetTextAsync(playlistUrl, token).ConfigureAwait(false)).TrimStart('\uFEFF');
+        string[] lines = playlist.Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0).ToArray();
+        if (lines.Length == 0 || lines[0] != "#EXTM3U" || !lines.Contains("#EXT-X-ENDLIST") ||
+            lines.Any(line => line.StartsWith("#EXT-X-MAP:") || line.StartsWith("#EXT-X-BYTERANGE:") || line == "#EXT-X-DISCONTINUITY" ||
+                line.StartsWith("#EXT-X-KEY:") && line != "#EXT-X-KEY:METHOD=NONE"))
+            throw new DiskException("Bu video akışı desteklenmiyor.");
+        string[] segments = lines.Where(line => !line.StartsWith('#')).ToArray();
+        if (segments.Length == 0)
+            throw new DiskException("Video adresi alınamadı.");
+        long bytes = 0;
+        await using var destination = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(131072);
+        var timer = Stopwatch.StartNew();
+        try
+        {
+            for (int index = 0; index < segments.Length; index++)
+            {
+                token.ThrowIfCancellationRequested();
+                string segmentUrl = new Uri(new Uri(playlistUrl), segments[index]).AbsoluteUri;
+                ValidateHttps(segmentUrl);
+                using var response = await SendAsync(segmentUrl, token).ConfigureAwait(false);
+                if (IsTransient(response.StatusCode) || response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
+                    throw new TransferException(RetryAfter(response));
+                ThrowIfError(response.StatusCode);
+                long? length = response.Content.Headers.ContentLength;
+                long expected = Math.Max(bytes + 1, (long)((bytes + Math.Max(0, length ?? 0)) * (double)segments.Length / (index + 1)));
+                long segmentBytes = 0;
+                await using var source = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+                while (true)
+                {
+                    using var idle = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    idle.CancelAfter(idleTimeout);
+                    int count;
+                    try { count = await source.ReadAsync(buffer.AsMemory(), idle.Token).ConfigureAwait(false); }
+                    catch (IOException) { throw new TransferException(); }
+                    if (count == 0)
+                        break;
+                    for (int offset = (int)((188 - segmentBytes % 188) % 188); offset < count; offset += 188)
+                        if (buffer[offset] != 0x47)
+                            throw new DiskException("Bu video akışı desteklenmiyor.");
+                    await destination.WriteAsync(buffer.AsMemory(0, count), token).ConfigureAwait(false);
+                    segmentBytes += count;
+                    bytes += count;
+                    if (timer.ElapsedMilliseconds >= 100)
+                    {
+                        progress?.Report(new(file, TransferState.Downloading, bytes, Math.Max(bytes + 1, expected)));
+                        timer.Restart();
+                    }
+                }
+                if (segmentBytes == 0 || segmentBytes % 188 != 0 || length is not null && segmentBytes != length)
+                    throw new TransferException();
+                progress?.Report(new(file, TransferState.Downloading, bytes, Math.Max(bytes, expected)));
+            }
+            await destination.FlushAsync(token).ConfigureAwait(false);
+            return bytes;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private async Task<string> GetTextAsync(string url, CancellationToken token)
+    {
+        ValidateHttps(url);
+        using var response = await SendAsync(url, token).ConfigureAwait(false);
+        if (IsTransient(response.StatusCode) || response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
+            throw new TransferException(RetryAfter(response));
+        ThrowIfError(response.StatusCode);
+        await using var source = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+        using var result = new MemoryStream();
+        byte[] buffer = new byte[16384];
+        while (true)
+        {
+            using var idle = CancellationTokenSource.CreateLinkedTokenSource(token);
+            idle.CancelAfter(idleTimeout);
+            int count;
+            try { count = await source.ReadAsync(buffer.AsMemory(), idle.Token).ConfigureAwait(false); }
+            catch (IOException) { throw new TransferException(); }
+            if (count == 0)
+                return Encoding.UTF8.GetString(result.ToArray());
+            if (result.Length + count > 8 * 1024 * 1024)
+                throw new DiskException("Video adresi alınamadı.");
+            result.Write(buffer, 0, count);
+        }
+    }
+
     public async Task<byte[]?> GetPreviewAsync(string url, CancellationToken token)
     {
         try
@@ -338,13 +468,13 @@ public sealed class DiskClient : IDisposable
         }
     }
 
-    private async Task<JsonDocument> GetJsonAsync(string url, CancellationToken token)
+    private async Task<JsonDocument> GetJsonAsync(string url, CancellationToken token, string? body = null, string? cookie = null)
     {
         for (int attempt = 0; ; attempt++)
         {
             try
             {
-                using var response = await SendAsync(url, token).ConfigureAwait(false);
+                using var response = await SendAsync(url, token, body, cookie).ConfigureAwait(false);
                 if (IsTransient(response.StatusCode))
                 {
                     if (attempt >= 2)
@@ -371,11 +501,16 @@ public sealed class DiskClient : IDisposable
         }
     }
 
-    private async Task<HttpResponseMessage> SendAsync(string url, CancellationToken token)
+    private async Task<HttpResponseMessage> SendAsync(string url, CancellationToken token, string? body = null, string? cookie = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        using var request = new HttpRequestMessage(body is null ? HttpMethod.Get : HttpMethod.Post, url);
+        request.Headers.UserAgent.ParseAdd("Mozilla/5.0");
+        if (body is not null)
+            request.Content = new StringContent(body, Encoding.UTF8, "text/plain");
+        if (cookie is not null)
+            request.Headers.Add("Cookie", cookie);
         return await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
     }
 

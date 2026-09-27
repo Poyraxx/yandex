@@ -24,6 +24,8 @@ internal static class Program
     {
         if (args is ["--public-link", var link, "--public-path", var path])
             return VerifyPublicDownloadAsync(link, path).GetAwaiter().GetResult();
+        if (args is ["--public-video", var videoLink, "--public-path", var videoPath])
+            return VerifyPublicDownloadAsync(videoLink, videoPath, true).GetAwaiter().GetResult();
         if (args.Contains("--ui") || args.Contains("--ui-check"))
         {
             return ShowFixture(args);
@@ -54,6 +56,10 @@ internal static class Program
             ("Aynı boyutta farklı dosyanın reddi", OriginalHashMismatchAsync),
             ("Önizlemenin orijinal yerine kaydedilmemesi", OriginalAddressRequirementsAsync),
             ("Süresi dolan orijinal adresin yenilenmesi", OriginalAddressRefreshAsync),
+            ("En yüksek video akışı ve TS dosya adı", VideoStreamAsync),
+            ("Kesilen video akışının yenilenmesi", VideoStreamRetryAsync),
+            ("Video akışı iptali ve temizlik", VideoStreamCancellationAsync),
+            ("Eksik ve desteklenmeyen video akışları", VideoStreamErrorsAsync),
             ("Eksik dosya ve devam eden kuyruk", FailedTransferAsync),
             ("Büyük dosya, akış ve eşzamanlılık", LargeStreamingAsync),
             ("İptal ve yarım dosya temizliği", DownloadCancellationAsync),
@@ -79,18 +85,24 @@ internal static class Program
         return failed == 0 ? 0 : 1;
     }
 
-    private static async Task<int> VerifyPublicDownloadAsync(string link, string path)
+    private static async Task<int> VerifyPublicDownloadAsync(string link, string path, bool playback = false)
     {
         using var folder = new TemporaryFolder();
-        using var client = new DiskClient();
-        var file = new MediaFile("test.jpg", path, ["test.jpg"], 0, false, null);
+        using var http = new HttpClient(playback ? new PlaybackHandler() : new SocketsHttpHandler());
+        using var client = new DiskClient(http);
+        string name = playback ? "test.mp4" : "test.jpg";
+        var file = new MediaFile(name, path, [name], 0, playback, null);
         var result = await client.DownloadAsync(link, [file], folder.Path, null, default);
         if (result.Completed != 1)
         {
             Console.WriteLine(result.Updates.Single().Error);
             return 1;
         }
-        Console.WriteLine($"API downloaded bytes: {new FileInfo(Directory.GetFiles(folder.Path).Single()).Length}");
+        string saved = Directory.GetFiles(folder.Path).Single();
+        if (playback) Equal(".ts", System.IO.Path.GetExtension(saved));
+        Console.WriteLine($"API downloaded bytes: {new FileInfo(saved).Length}");
+        using var savedStream = System.IO.File.OpenRead(saved);
+        Console.WriteLine($"API SHA-256: {Convert.ToHexString(SHA256.HashData(savedStream))}");
         return 0;
     }
 
@@ -363,7 +375,9 @@ internal static class Program
             int transfers = 0;
             using var http = Mock(request =>
             {
-                if (request.RequestUri!.Host != "cloud-api.yandex.net")
+                if (request.RequestUri!.Host == "disk.yandex.com")
+                    return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("<html></html>") };
+                if (request.RequestUri.Host != "cloud-api.yandex.net")
                 {
                     Interlocked.Increment(ref transfers);
                     return Bytes(Payload);
@@ -397,6 +411,103 @@ internal static class Program
         Equal(1, result.Completed);
         Equal(2, metadataCalls);
         Equal(1, Directory.GetFiles(folder.Path).Length);
+    }
+
+    private static readonly byte[] VideoPayload = Enumerable.Range(0, 188 * 3).Select(index => (byte)(index % 188 == 0 ? 0x47 : 1)).ToArray();
+
+    private static HttpClient VideoMock(Func<HttpRequestMessage, HttpResponseMessage> route) => Mock(request =>
+    {
+        var uri = request.RequestUri!;
+        if (uri.Host == "cloud-api.yandex.net") return Json(new { href = "" });
+        if (uri.AbsolutePath == "/d/test")
+        {
+            string store = JsonSerializer.Serialize(new { rootResourceId = "root", resources = new { root = new { type = "dir", hash = "public-hash" } }, environment = new { sk = "public-sk", yandexuid = "123" } });
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("<script id=\"store-prefetch\">" + store + "</script>") };
+        }
+        if (uri.AbsolutePath == "/public/api/get-video-streams")
+        {
+            Equal(HttpMethod.Post, request.Method);
+            using var body = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            Equal("public-hash:/film.mp4", body.RootElement.GetProperty("hash").GetString());
+            Check(request.Headers.GetValues("Cookie").Single().Contains("yandexuid=123"), "Anonim video çerezi eksik");
+            return route(request);
+        }
+        return route(request);
+    });
+
+    private static HttpResponseMessage VideoStreams() => Json(new { data = new { videos = new[] {
+        new { dimension = "240p", size = new { height = 240 }, url = "https://video.test/low/list.m3u8" },
+        new { dimension = "adaptive", size = new { height = 0 }, url = "https://video.test/master.m3u8" },
+        new { dimension = "1080p", size = new { height = 1080 }, url = "https://video.test/high/list.m3u8" } } } });
+
+    private static HttpResponseMessage Playlist(string value) => new(HttpStatusCode.OK) { Content = new StringContent(value) };
+
+    private static async Task VideoStreamAsync()
+    {
+        using var folder = new TemporaryFolder();
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(folder.Path, "film.ts"), Payload);
+        using var http = VideoMock(request => request.RequestUri!.AbsolutePath == "/public/api/get-video-streams" ? VideoStreams() :
+            request.RequestUri.AbsolutePath == "/high/list.m3u8" ? Playlist("#EXTM3U\n#EXTINF:4,\n1.ts\n#EXTINF:2,\n2.ts\n#EXT-X-ENDLIST\n") :
+            request.RequestUri.AbsolutePath is "/high/1.ts" or "/high/2.ts" ? Bytes(VideoPayload) : throw new Exception("Yanlış video kalitesi"));
+        using var client = Client(http);
+        var progress = new Capture<DownloadUpdate>();
+        var result = await client.DownloadAsync(Link, [File("film.mp4")], folder.Path, progress, default);
+        Equal(1, result.Completed);
+        var saved = System.IO.File.ReadAllBytes(System.IO.Path.Combine(folder.Path, "film (1).ts"));
+        Check(saved.SequenceEqual(VideoPayload.Concat(VideoPayload)), "Video parçaları eksik");
+        Check(!System.IO.File.Exists(System.IO.Path.Combine(folder.Path, "film.mp4")), "TS dosyası MP4 adıyla kaydedildi");
+        Check(progress.Values.Any(update => update.State == TransferState.Downloading && update.Bytes > 0 && update.Bytes < update.Total), "Video ilerlemesi eksik");
+    }
+
+    private static async Task VideoStreamRetryAsync()
+    {
+        using var folder = new TemporaryFolder();
+        int addresses = 0;
+        int attempts = 0;
+        using var http = VideoMock(request =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/public/api/get-video-streams") { Interlocked.Increment(ref addresses); return VideoStreams(); }
+            if (request.RequestUri.AbsolutePath.EndsWith(".m3u8")) return Playlist("#EXTM3U\n1.ts\n#EXT-X-ENDLIST\n");
+            return Interlocked.Increment(ref attempts) == 1 ? new HttpResponseMessage(HttpStatusCode.Forbidden) : Bytes(VideoPayload);
+        });
+        using var client = Client(http);
+        var result = await client.DownloadAsync(Link, [File("film.mp4")], folder.Path, null, default);
+        Equal(1, result.Completed);
+        Equal(2, addresses);
+        Check(System.IO.File.ReadAllBytes(Directory.GetFiles(folder.Path).Single()).SequenceEqual(VideoPayload), "Yarım video tekrarlandı");
+    }
+
+    private static async Task VideoStreamCancellationAsync()
+    {
+        using var folder = new TemporaryFolder();
+        using var cancel = new CancellationTokenSource();
+        using var http = VideoMock(request => request.RequestUri!.AbsolutePath == "/public/api/get-video-streams" ? VideoStreams() :
+            request.RequestUri.AbsolutePath.EndsWith(".m3u8") ? Playlist("#EXTM3U\n1.ts\n2.ts\n#EXT-X-ENDLIST\n") : Bytes(VideoPayload));
+        using var client = Client(http);
+        var progress = new Capture<DownloadUpdate>(update => { if (update.Bytes > 0) cancel.Cancel(); });
+        var result = await client.DownloadAsync(Link, [File("film.mp4")], folder.Path, progress, cancel.Token);
+        Equal(1, result.Cancelled);
+        Equal(0, Directory.GetFiles(folder.Path).Length);
+    }
+
+    private static async Task VideoStreamErrorsAsync()
+    {
+        foreach (string playlist in new[] { "#EXTM3U\n1.ts", "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES\n1.ts\n#EXT-X-ENDLIST", "#EXTM3U\n#EXT-X-MAP:URI=init.mp4\n1.ts\n#EXT-X-ENDLIST", "#EXTM3U\nfile:///outside\n#EXT-X-ENDLIST", "#EXTM3U\n1.ts\n#EXT-X-ENDLIST" })
+        {
+            using var folder = new TemporaryFolder();
+            using var http = VideoMock(request => request.RequestUri!.AbsolutePath == "/public/api/get-video-streams" ? VideoStreams() :
+                request.RequestUri.AbsolutePath.EndsWith(".m3u8") ? Playlist(playlist) : Bytes(Payload));
+            using var client = Client(http);
+            var result = await client.DownloadAsync(Link, [File("film.mp4")], folder.Path, null, default);
+            Equal(1, result.Failed);
+            Equal(0, Directory.GetFiles(folder.Path).Length);
+        }
+    }
+
+    private sealed class PlaybackHandler() : DelegatingHandler(new SocketsHttpHandler { ConnectTimeout = TimeSpan.FromSeconds(20) })
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            request.RequestUri!.Host == "cloud-api.yandex.net" ? Task.FromResult(Json(new { href = "" })) : base.SendAsync(request, cancellationToken);
     }
 
     private static async Task FailedTransferAsync()

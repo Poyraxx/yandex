@@ -253,7 +253,12 @@ public final class DownloadService extends Service {
 
         @Override
         public OutputStream open() throws IOException {
-            temporary = parent.createFile(file.mime, "." + UUID.randomUUID() + ".part");
+            return open(file.mime);
+        }
+
+        @Override
+        public OutputStream open(String mime) throws IOException {
+            temporary = parent.createFile(mime, "." + UUID.randomUUID() + ".part");
             if (temporary == null) throw new DiskClient.PermanentException("Dosya oluşturulamadı. Klasörü kontrol edin.");
             OutputStream output = getContentResolver().openOutputStream(temporary.getUri(), "w");
             if (output == null) throw new DiskClient.PermanentException("Dosya kaydedilemedi.");
@@ -262,8 +267,13 @@ public final class DownloadService extends Service {
 
         @Override
         public void complete() throws IOException {
+            complete(file.name);
+        }
+
+        @Override
+        public void complete(String savedName) throws IOException {
             synchronized (storageLock) {
-                String original = DiskClient.safeName(file.name);
+                String original = DiskClient.safeName(savedName);
                 int dot = original.lastIndexOf('.');
                 String stem = dot > 0 ? original.substring(0, dot) : original;
                 String extension = dot > 0 ? original.substring(dot) : "";

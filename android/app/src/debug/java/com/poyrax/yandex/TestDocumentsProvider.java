@@ -14,6 +14,7 @@ import java.io.IOException;
 
 public final class TestDocumentsProvider extends DocumentsProvider {
     private File root;
+    private final java.util.Map<String, String> mimeTypes = new java.util.concurrent.ConcurrentHashMap<>();
     private static final String[] COLUMNS = {Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME, Document.COLUMN_MIME_TYPE, Document.COLUMN_FLAGS, Document.COLUMN_SIZE};
 
     @Override
@@ -54,6 +55,7 @@ public final class TestDocumentsProvider extends DocumentsProvider {
         try {
             boolean made = mimeType.equals(Document.MIME_TYPE_DIR) ? child.mkdir() : child.createNewFile();
             if (!made) throw new FileNotFoundException();
+            mimeTypes.put(id(child), mimeType);
             return id(child);
         } catch (IOException e) { throw new FileNotFoundException(e.getMessage()); }
     }
@@ -63,12 +65,15 @@ public final class TestDocumentsProvider extends DocumentsProvider {
         File source = resolve(documentId);
         File target = new File(source.getParentFile(), name);
         if (target.exists() || !source.renameTo(target)) throw new FileNotFoundException();
+        String mime = mimeTypes.remove(documentId);
+        if (mime != null) mimeTypes.put(id(target), mime);
         return id(target);
     }
 
     @Override
     public void deleteDocument(String documentId) throws FileNotFoundException {
         if (!resolve(documentId).delete()) throw new FileNotFoundException();
+        mimeTypes.remove(documentId);
     }
 
     @Override
@@ -95,7 +100,7 @@ public final class TestDocumentsProvider extends DocumentsProvider {
             switch (column) {
                 case Document.COLUMN_DOCUMENT_ID: row.add(id(file)); break;
                 case Document.COLUMN_DISPLAY_NAME: row.add(name); break;
-                case Document.COLUMN_MIME_TYPE: row.add(file.isDirectory() ? Document.MIME_TYPE_DIR : "application/octet-stream"); break;
+                case Document.COLUMN_MIME_TYPE: row.add(file.isDirectory() ? Document.MIME_TYPE_DIR : mimeTypes.getOrDefault(id(file), "application/octet-stream")); break;
                 case Document.COLUMN_FLAGS: row.add(flags); break;
                 case Document.COLUMN_SIZE: row.add(file.length()); break;
                 default: row.add(null);
