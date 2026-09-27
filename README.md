@@ -103,7 +103,7 @@ Android kontrolleri, `android` klasöründen:
 .\gradlew.bat :app:connectedDebugAndroidTest
 ```
 
-Cihaz testleri için bağlı bir Android cihazı veya çalışan bir emülatör gerekir. Windows’ta 20 indirme/API kontrolü ve 4 arayüz kontrolü; Android’de 13 birim testi ve Android 17 emülatöründeki 3 cihaz testi geçti. İmzalı APK’nın Android 8 ve Android 17’de kurulup açılması da doğrulandı.
+Cihaz testleri için bağlı bir Android cihazı veya çalışan bir emülatör gerekir. Windows’ta 20 indirme/API kontrolü ve 4 arayüz kontrolü; Android’de 13 birim testi ve Android 8 ile Android 17 emülatörlerinde üçer cihaz testi geçti. İmzalı APK’nın her iki Android sürümünde kurulup açılması da doğrulandı.
 
 Testler tek dosya, alt klasörler, sayfalama, dosya türü ayrımı, seçili ve toplu indirme, isim çakışması, kesilen bağlantı ve iptal davranışlarını örnek API yanıtlarıyla kontrol eder. Gerçek Yandex paylaşımıyla uçtan uca indirme bu sürümde henüz doğrulanmadı.
 

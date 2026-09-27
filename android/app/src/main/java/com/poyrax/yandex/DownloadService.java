@@ -115,7 +115,7 @@ public final class DownloadService extends Service {
         ExecutorService workers = Executors.newFixedThreadPool(2);
         try {
             root = DocumentFile.fromTreeUri(this, target);
-            if (root == null || !root.isDirectory() || !root.canWrite()) throw new IOException("Klasöre yazma izni yok. Klasörü yeniden seçin.");
+            if (root == null || !root.isDirectory()) throw new IOException("Klasöre erişilemiyor. Klasörü yeniden seçin.");
             folderNames = mapFolders(gallery);
             folders.clear();
             folders.put("", root);

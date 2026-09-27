@@ -114,6 +114,8 @@ public class AppTest {
         Uri folderUri = DocumentsContract.buildTreeDocumentUri("com.poyrax.yandex.test.documents", DocumentsContract.getDocumentId(folder.getUri()));
         instrumentation.getTargetContext().grantUriPermission(target.getPackageName(), folderUri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        instrumentation.getTargetContext().grantUriPermission(target.getPackageName(), DocumentsContract.buildDocumentUriUsingTree(folderUri, DocumentsContract.getTreeDocumentId(folderUri)),
+                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
         FakeClient client = new FakeClient(slow, blocked);
         instrumentation.runOnMainSync(() -> {
             activity.client = client;
